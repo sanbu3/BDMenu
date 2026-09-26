@@ -1,0 +1,22 @@
+name: macOS build and regression tests
+on:
+  push:
+    branches: [main, 'fix/**']
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n build.sh install.sh make_icon.sh cli/bds
+      - name: Core regression tests and app compilation
+        run: swift test
+      - name: Clean ARM64 app bundle and signature validation
+        run: ./build.sh --adhoc

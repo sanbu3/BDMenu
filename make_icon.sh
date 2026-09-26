@@ -1,6 +1,7 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 cd "$(dirname "$0")"
+mkdir -p build
 swift make_icon.swift build/icon_1024.png
 ICONSET=build/icon.iconset
 rm -rf "$ICONSET"

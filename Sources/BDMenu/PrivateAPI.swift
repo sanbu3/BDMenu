@@ -7,7 +7,8 @@ enum PrivateAPI {
     static func load(_ paths: [String], _ symbol: String) -> UnsafeMutableRawPointer? {
         for p in paths {
             if let h = dlopen(p, RTLD_LAZY) {
-                return dlsym(h, symbol)
+                if let address = dlsym(h, symbol) { return address }
+                dlclose(h)
             }
         }
         return nil
@@ -47,10 +48,15 @@ enum PrivateAPI {
     }()
 
     static func allDisplayIDs() -> [CGDirectDisplayID] {
-        guard let fn = cgsList else { return [] }
+        guard let fn = cgsList else {
+            var ids = [CGDirectDisplayID](repeating: 0, count: 64)
+            var count: UInt32 = 0
+            guard CGGetOnlineDisplayList(64, &ids, &count) == .success else { return [] }
+            return Array(ids.prefix(Int(count)))
+        }
         var ids = [CGDirectDisplayID](repeating: 0, count: 64)
         var count: UInt32 = 0
-        _ = fn(64, &ids, &count)
+        guard fn(64, &ids, &count) == .success else { return [] }
         return Array(ids.prefix(Int(count)))
     }
 
@@ -65,7 +71,11 @@ enum PrivateAPI {
             return false
         }
         let r = fn(cfg, id, enabled)
-        let complete = CGCompleteDisplayConfiguration(cfg, .permanently)
+        guard r == .success else {
+            CGCancelDisplayConfiguration(cfg)
+            return false
+        }
+        let complete = CGCompleteDisplayConfiguration(cfg, .forSession)
         os_log("BDMenu: setDisplayEnabled id=%{public}d enabled=%{public}d -> %{public}d/%{public}d", id, enabled ? 1 : 0, r.rawValue, complete.rawValue)
         return r == .success && complete == .success
     }
@@ -90,6 +100,7 @@ enum PrivateAPI {
 
     static func setBrightness(_ id: CGDirectDisplayID, _ value: Double) -> Bool {
         guard let fn = dsSet else { return false }
-        return fn(id, Float(value)) == 0
+        guard value.isFinite else { return false }
+        return fn(id, Float(min(1, max(0, value)))) == 0
     }
 }
