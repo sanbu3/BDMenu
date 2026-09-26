@@ -26,21 +26,35 @@ struct MenuView: View {
 
             Divider()
 
-            HStack(spacing: 14) {
-                Toggle("镜像模式", isOn: Binding(
-                    get: { dm.mirrored },
-                    set: { dm.setMirror($0) }
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("亮度键跟随鼠标", isOn: Binding(
+                    get: { dm.followPointerEnabled },
+                    set: { dm.setFollowPointer($0) }
                 ))
                 .toggleStyle(.switch)
                 .controlSize(.small)
-                .disabled(dm.external == nil || !dm.externalOnline)
+                if dm.followPointerEnabled && !dm.keysTrusted {
+                    Text("需要辅助功能权限:系统设置 → 隐私与安全性 → 辅助功能,勾选 BDMenu 后生效")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
 
-                Toggle("登录时启动", isOn: Binding(
-                    get: { dm.launchAtLogin },
-                    set: { dm.setLaunchAtLogin($0) }
-                ))
-                .toggleStyle(.switch)
-                .controlSize(.small)
+                HStack(spacing: 14) {
+                    Toggle("镜像模式", isOn: Binding(
+                        get: { dm.mirrored },
+                        set: { dm.setMirror($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .disabled(dm.external == nil || !dm.externalOnline)
+
+                    Toggle("登录时启动", isOn: Binding(
+                        get: { dm.launchAtLogin },
+                        set: { dm.setLaunchAtLogin($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                }
             }
 
             HStack {
@@ -73,6 +87,7 @@ struct MenuView: View {
             dm.start()
             while !Task.isCancelled {
                 dm.refresh()
+                dm.installKeysIfNeeded()
                 try? await Task.sleep(for: .seconds(2))
             }
         }

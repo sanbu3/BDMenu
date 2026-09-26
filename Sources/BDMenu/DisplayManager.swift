@@ -2,6 +2,8 @@ import Foundation
 import CoreGraphics
 import Observation
 import ServiceManagement
+import AppKit
+import SwiftUI
 
 @Observable
 final class DisplayManager {
@@ -56,6 +58,9 @@ final class DisplayManager {
     private var pendingWork: DispatchWorkItem?
     private var lastAutoCapture = Date.distantPast
     private var workflowPreBrightness: Double?
+    private let keys = BrightnessKeys()
+    private var hud: NSPanel?
+    private var hudHideWork: DispatchWorkItem?
 
     let inputOptions: [(Int, String)] = [(15, "DP 1"), (16, "DP 2"), (17, "HDMI 1"), (18, "HDMI 2"), (27, "USB-C")]
 
@@ -71,6 +76,109 @@ final class DisplayManager {
     var externalPresent: Bool { external != nil }
     var builtinOnline: Bool { builtin?.enabled ?? false }
     var launchAtLogin: Bool { SMAppService.mainApp.status == .enabled }
+    var followPointerEnabled: Bool { UserDefaults.standard.bool(forKey: "followPointer") }
+    var keysTrusted: Bool { BrightnessKeys.isTrusted() }
+
+    func setFollowPointer(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: "followPointer")
+        if on {
+            if !BrightnessKeys.isTrusted() {
+                _ = BrightnessKeys.requestAccess()
+            }
+            installKeysIfNeeded()
+        } else {
+            keys.uninstall()
+        }
+    }
+
+    func installKeysIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: "followPointer"), BrightnessKeys.isTrusted() else { return }
+        guard !keys.installed else { return }
+        keys.onAdjust = { [weak self] delta, fine in
+            self?.handleBrightnessKey(delta: delta, fine: fine) ?? false
+        }
+        keys.install()
+    }
+
+    func displayUnderMouse() -> CGDirectDisplayID? {
+        let m = NSEvent.mouseLocation
+        let mainBounds = CGDisplayBounds(CGMainDisplayID())
+        let gx = m.x
+        let gy = mainBounds.height - m.y
+        var online = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        CGGetOnlineDisplayList(32, &online, &count)
+        for i in 0..<Int(count) {
+            if CGDisplayBounds(online[i]).contains(CGPoint(x: gx, y: gy)) {
+                return online[i]
+            }
+        }
+        return nil
+    }
+
+    func handleBrightnessKey(delta: Int, fine: Bool) -> Bool {
+        guard let id = displayUnderMouse() else { return false }
+        let step = fine ? 1.6 : 6.25
+        if CGDisplayIsBuiltin(id) != 0 {
+            guard builtinOnline else { return false }
+            let v = min(100, max(0, builtinBrightness + Double(delta) * step))
+            setBuiltinBrightness(v)
+            return true
+        } else {
+            guard externalOnline, id == external?.id else { return false }
+            let v = min(100, max(0, externalBrightness + Double(delta) * step))
+            setExternalBrightness(v)
+            showHUD(value: Int(v.rounded()), on: id)
+            return true
+        }
+    }
+
+    func showHUD(value: Int, on displayID: CGDirectDisplayID) {
+        let size = NSSize(width: 170, height: 58)
+        if hud == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(origin: .zero, size: size),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.level = .statusBar
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.contentView = NSHostingView(rootView: HUDView(value: value))
+            hud = panel
+        }
+        if let hosting = hud?.contentView as? NSHostingView<HUDView> {
+            hosting.rootView = HUDView(value: value)
+        }
+        let b = CGDisplayBounds(displayID)
+        let mainH = CGDisplayBounds(CGMainDisplayID()).height
+        let gx = b.minX + b.width / 2 - size.width / 2
+        let gy = b.minY + b.height * 0.72 - size.height / 2
+        hud?.setFrame(NSRect(x: gx, y: mainH - gy - size.height, width: size.width, height: size.height), display: true)
+        hud?.alphaValue = 0
+        hud?.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            hud?.animator().alphaValue = 1
+        }
+        hudHideWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, let hud = self.hud else { return }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.35
+                hud.animator().alphaValue = 0
+            }, completionHandler: {
+                hud.orderOut(nil)
+            })
+        }
+        hudHideWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
+    }
 
     func start() {
         guard !started else { return }
@@ -81,6 +189,7 @@ final class DisplayManager {
             mgr.scheduleHandleChange()
         }, Unmanaged.passUnretained(self).toOpaque())
         scheduleHandleChange()
+        installKeysIfNeeded()
     }
 
     func scheduleHandleChange() {
