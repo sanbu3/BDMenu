@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Shell syntax
         run: bash -n build.sh install.sh make_icon.sh cli/bds
+      - name: CLI regression tests
+        run: python3 Tests/test_cli.py
       - name: Core regression tests and app compilation
         run: swift test
       - name: Clean ARM64 app bundle and signature validation

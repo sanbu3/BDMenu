@@ -56,6 +56,7 @@ final class DisplayManager {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var changeTask: Task<Void, Never>?
     @ObservationIgnored private var detailsTask: Task<Void, Never>?
+    @ObservationIgnored private var captureTask: Task<Void, Never>?
     @ObservationIgnored private var workflowTask: Task<Void, Never>?
     @ObservationIgnored private var permissionTask: Task<Void, Never>?
     @ObservationIgnored private var brightnessTasks: [CGDirectDisplayID: Task<Void, Never>] = [:]
@@ -103,7 +104,7 @@ final class DisplayManager {
         guard started else { return }
         started = false
         CGDisplayRemoveReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
-        changeTask?.cancel(); detailsTask?.cancel(); workflowTask?.cancel(); permissionTask?.cancel(); hudHideTask?.cancel()
+        changeTask?.cancel(); detailsTask?.cancel(); captureTask?.cancel(); workflowTask?.cancel(); permissionTask?.cancel(); hudHideTask?.cancel()
         brightnessTasks.values.forEach { $0.cancel() }; volumeTasks.values.forEach { $0.cancel() }
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
@@ -258,7 +259,24 @@ final class DisplayManager {
                 self.controls[device.id]?.modes = modes
                 self.controls[device.id]?.currentMode = modes.first(where: \.isCurrent)?.id ?? -1
             }
-            if !self.isApplying && Date() >= self.suppressCaptureUntil { self.saveLayout(snapshot) }
+            if !self.isApplying && Date() >= self.suppressCaptureUntil {
+                self.saveLayout(snapshot)
+            } else {
+                self.scheduleCapture()
+            }
+        }
+    }
+
+    private func scheduleCapture() {
+        captureTask?.cancel()
+        let expected = generation
+        let delay = max(1, suppressCaptureUntil.timeIntervalSinceNow + 0.3)
+        captureTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(Int(delay * 1000))) } catch { return }
+            guard let self, self.started, !self.isApplying, self.generation == expected,
+                  Date() >= self.suppressCaptureUntil else { return }
+            guard let snapshot = await self.readSnapshot(), !Task.isCancelled, self.generation == expected else { return }
+            self.saveLayout(snapshot)
         }
     }
 

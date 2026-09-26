@@ -16,7 +16,7 @@ DCTL="$BIN/displayctl"
 DPWR="$BIN/displaypower"
 DDC="$BIN/m1ddc"
 DPL="$BIN/displayplacer"
-CFG="$HOME/.config/bds"
+CFG="${BDMENU_CONFIG_DIR:-$HOME/.config/bds}"
 mkdir -p "$CFG"
 
 # ---------- 工具函数 ----------
@@ -51,26 +51,53 @@ dp_records() {
     /^Hertz:/ { hz=$2; next }
     /^Color Depth:/ { depth=$3; next }
     /^Scaling:/ { scaling=$2; next }
-    /^Origin:/ { gsub(/[(),]/,"",$2); split($2, o, ","); ox=o[1]; oy=o[2]; main=(ox==0 && oy==0)?1:0; next }
-    /^Enabled:/ { enabled=$2; printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", uuid, W, H, hz, depth, scaling, ox, oy, enabled, main; next }
+    /^Origin:/ { gsub(/[()]/,"",$2); split($2, o, ","); ox=o[1]; oy=o[2]; main=(ox==0 && oy==0)?1:0; next }
+    /^Rotation:/ { rotation=$2; next }
+    /^Enabled:/ { enabled=$2; printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", uuid, W, H, hz, depth, scaling, ox, oy, enabled, main, rotation; next }
   '
 }
 
-# emit_cmd <record>... -> displayplacer 配置串
-emit_cmd() {
-  local cmd=""
+# Apply each display configuration as one literal argv item, never via eval.
+apply_records() {
+  local rec uuid W H hz depth scaling ox oy enabled main rotation arg
+  local args=()
   for rec in "$@"; do
-    IFS='|' read -r uuid W H hz depth scaling ox oy enabled main <<< "$rec"
-    cmd+=" \"id:${uuid} res:${W}x${H} hz:${hz} color_depth:${depth} enabled:${enabled} scaling:${scaling} origin:(${ox},${oy}) degree:0\""
+    IFS='|' read -r uuid W H hz depth scaling ox oy enabled main rotation <<< "$rec"
+    [ -n "$uuid" ] || return 1
+    if [ "$enabled" = false ]; then
+      args+=("id:$uuid enabled:false")
+    else
+      arg="id:$uuid res:${W}x${H} color_depth:$depth enabled:true scaling:$scaling origin:($ox,$oy) degree:${rotation:-0}"
+      if [[ "$hz" =~ ^[1-9][0-9]*$ ]]; then arg+=" hz:$hz"; fi
+      args+=("$arg")
+    fi
   done
-  echo "$cmd"
+  [ "${#args[@]}" -gt 0 ] || return 1
+  "$DPL" "${args[@]}"
 }
 
-# apply_records <record>...
-apply_records() {
-  local cmd
-  cmd="$(emit_cmd "$@")" || return 1
-  eval "$DPL $cmd"
+# displayplacer emits a sequence of quoted arguments. Parse only that format;
+# shell metacharacters inside an argument are data, never executable code.
+apply_saved() {
+  local remaining="$1" arg regex='^[[:space:]]*"([^"]+)"(.*)$'
+  local args=()
+  while [[ "$remaining" =~ $regex ]]; do
+    arg="${BASH_REMATCH[1]}"
+    remaining="${BASH_REMATCH[2]}"
+    [[ "$arg" == id:* ]] || { echo "无效的显示器配置" >&2; return 1; }
+    args+=("$arg")
+  done
+  if [[ -n "${remaining//[[:space:]]/}" ]] || [ "${#args[@]}" -eq 0 ]; then
+    echo "配置格式无效，未执行" >&2
+    return 1
+  fi
+  "$DPL" "${args[@]}"
+}
+
+valid_profile_name() {
+  case "$1" in
+    ''|.|..|*/*) echo "配置名不能包含路径" >&2; return 1 ;;
+  esac
 }
 
 # ---------- 命令 ----------
@@ -166,11 +193,11 @@ cmd_res() {
   local scaling="${3:-}"
   local recs=()
   while IFS= read -r rec; do
-    IFS='|' read -r u W2 H2 h2 d2 s2 ox oy en main <<< "$rec"
+    IFS='|' read -r u W2 H2 h2 d2 s2 ox oy en main rotation <<< "$rec"
     if [ "$u" = "$uuid" ]; then
       [ -n "$hz" ] && h2="$hz"
       [ -n "$scaling" ] && s2="${scaling#scaling:}"
-      rec="$u|$W|$H|$h2|$d2|$s2|$ox|$oy|$en|$main"
+      rec="$u|$W|$H|$h2|$d2|$s2|$ox|$oy|$en|$main|$rotation"
     fi
     recs+=("$rec")
   done < <(dp_records)
@@ -178,24 +205,18 @@ cmd_res() {
 }
 
 cmd_main() {
-  local id uuid; id="$(resolve "$1")"; uuid="$(uuid_of "$id")"
-  local oldmain="" recs=()
+  local id uuid rec u W H h d s ox oy en main rotation tx ty
+  id="$(resolve "$1")"; uuid="$(uuid_of "$id")"
+  local recs=() newrecs=() found=false
   while IFS= read -r rec; do
-    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
-    if [ "$main" = "1" ]; then oldmain="$rec"; fi
+    IFS='|' read -r u W H h d s ox oy en main rotation <<< "$rec"
     recs+=("$rec")
+    if [ "$u" = "$uuid" ] && [ "$en" = true ]; then tx=$ox; ty=$oy; found=true; fi
   done < <(dp_records)
-  local newrecs=()
+  $found || { echo "目标显示器必须在线" >&2; return 1; }
   for rec in "${recs[@]}"; do
-    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
-    if [ "$u" = "$uuid" ]; then
-      newrecs+=("$u|$W|$H|$h|$d|$s|0|0|$en|1")
-    elif [ -n "$oldmain" ] && [ "$u" = "$(echo "$oldmain" | cut -d'|' -f1)" ]; then
-      local tw th; IFS='|' read -r _ tw th _ _ _ _ _ _ _ <<< "$rec"
-      newrecs+=("$u|$W|$H|$h|$d|$s|$tw|0|$en|0")
-    else
-      newrecs+=("$rec")
-    fi
+    IFS='|' read -r u W H h d s ox oy en main rotation <<< "$rec"
+    newrecs+=("$u|$W|$H|$h|$d|$s|$((ox-tx))|$((oy-ty))|$en|0|$rotation")
   done
   apply_records "${newrecs[@]}"
 }
@@ -204,7 +225,7 @@ cmd_arrange() {
   local a b rel; a="$(uuid_of "$(resolve "$1")")"; rel="$2"; b="$(uuid_of "$(resolve "$3")")"
   local recs=() bx=0 by=0 bw=0 bh=0 ax=0 ay=0 aw=0 ah=0
   while IFS= read -r rec; do
-    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    IFS='|' read -r u W H h d s ox oy en main rotation <<< "$rec"
     recs+=("$rec")
     if [ "$u" = "$a" ]; then ax=$ox; ay=$oy; aw=$W; ah=$H; fi
     if [ "$u" = "$b" ]; then bx=$ox; by=$oy; bw=$W; bh=$H; fi
@@ -219,9 +240,9 @@ cmd_arrange() {
   esac
   local newrecs=()
   for rec in "${recs[@]}"; do
-    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    IFS='|' read -r u W H h d s ox oy en main rotation <<< "$rec"
     if [ "$u" = "$a" ]; then
-      newrecs+=("$u|$W|$H|$h|$d|$s|$nx|$ny|$en|0")
+      newrecs+=("$u|$W|$H|$h|$d|$s|$nx|$ny|$en|0|$rotation")
     else
       newrecs+=("$rec")
     fi
@@ -233,21 +254,21 @@ cmd_mirror() {
   local onoff="$1" recs=() mainrec=""
   while IFS= read -r rec; do
     recs+=("$rec")
-    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    IFS='|' read -r u W H h d s ox oy en main rotation <<< "$rec"
     if [ "$main" = "1" ]; then mainrec="$rec"; fi
   done < <(dp_records)
   if [ "$onoff" = "on" ]; then
     "$DPL" list 2>/dev/null | awk '/^displayplacer / {print; exit}' > "$CFG/.pre-mirror"
-    IFS='|' read -r mu mW mH mh md ms mox moy men mmain <<< "$mainrec"
+    IFS='|' read -r mu mW mH mh md ms mox moy men mmain rotation <<< "$mainrec"
     local mirror_ids="$mu"
     for rec in "${recs[@]}"; do
-      IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+      IFS='|' read -r u W H h d s ox oy en main rotation <<< "$rec"
       if [ "$u" != "$mu" ]; then mirror_ids+="+$u"; fi
     done
-    eval "$DPL \"id:${mirror_ids} res:${mW}x${mH} hz:${mh} color_depth:${md} enabled:true scaling:${ms} origin:(0,0) degree:0\""
+    "$DPL" "id:${mirror_ids} enabled:true origin:(0,0)"
   else
     if [ -f "$CFG/.pre-mirror" ]; then
-      eval "$DPL $(cat "$CFG/.pre-mirror" | sed 's/^displayplacer //')"
+      apply_saved "$(sed 's/^displayplacer //' "$CFG/.pre-mirror")"
     else
       echo "没有镜像前的配置,请手动设置或使用 bds restore"
       exit 1
@@ -257,6 +278,7 @@ cmd_mirror() {
 
 cmd_save() {
   local name="${1:-default}"
+  valid_profile_name "$name" || return 1
   local f="$CFG/$name.profile"
   {
     echo "# $(date)"
@@ -270,12 +292,13 @@ cmd_save() {
 
 cmd_restore() {
   local name="${1:-default}"
+  valid_profile_name "$name" || return 1
   local f="$CFG/$name.profile"
   [ -f "$f" ] || { echo "没有配置: $name (先用 bds save 保存)"; exit 1; }
   local cmd bright
   cmd="$(grep '^displayplacer ' "$f" | sed 's/^displayplacer //')"
   bright="$(grep '^brightness=' "$f" | head -1 | cut -d= -f2)"
-  eval "$DPL $cmd"
+  apply_saved "$cmd" || return 1
   if [ -n "$bright" ]; then
     local bid; bid="$(resolve builtin)"
     "$DCTL" set "$bid" "$bright" 2>/dev/null
