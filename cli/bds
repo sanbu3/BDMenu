@@ -1,0 +1,329 @@
+#!/bin/bash
+# bds — BetterDisplay 替代脚本
+# 基于:displayctl(亮度)、displaypower(断开/恢复)、m1ddc(DDC)、displayplacer(分辨率/布局)
+
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  LINK="$(readlink "$SCRIPT")"
+  case "$LINK" in
+    /*) SCRIPT="$LINK" ;;
+    *)  SCRIPT="$(dirname "$SCRIPT")/$LINK" ;;
+  esac
+done
+DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+BIN="$DIR/bin"
+DCTL="$BIN/displayctl"
+DPWR="$BIN/displaypower"
+DDC="$BIN/m1ddc"
+DPL="$BIN/displayplacer"
+CFG="$HOME/.config/bds"
+mkdir -p "$CFG"
+
+# ---------- 工具函数 ----------
+
+# resolve <spec> -> CGDisplayID (包含离线显示器)
+# spec: builtin|b|internal / external|e|ext / 数字id / 名称片段 / all
+resolve() {
+  local spec="$1"
+  case "$spec" in
+    builtin|internal|b) "$DPWR" list | awk -F'\t' '$2==1 {print $1; exit}' ;;
+    external|ext|e)     "$DPWR" list | awk -F'\t' '$2==0 {print $1; exit}' ;;
+    [0-9]*)             echo "$spec" ;;
+    *)                  "$DCTL" list | awk -F'\t' -v s="$spec" 'index(tolower($4), tolower(s)) {print $1; exit}' ;;
+  esac
+}
+
+# uuid <id> -> uuid (在线或离线均可)
+uuid_of() {
+  "$DPWR" list | awk -F'\t' -v i="$1" '$1==i {print $4}'
+}
+
+# is_builtin <id>
+is_builtin() {
+  [ "$("$DPWR" list | awk -F'\t' -v i="$1" '$1==i {print $2}')" = "1" ]
+}
+
+# dp_records -> 每行: uuid|W|H|hz|depth|scaling|ox|oy|enabled|main
+dp_records() {
+  "$DPL" list 2>/dev/null | awk '
+    /^Persistent screen id:/ { uuid=$4; next }
+    /^Resolution:/ { split($2, r, "x"); W=r[1]; H=r[2]; next }
+    /^Hertz:/ { hz=$2; next }
+    /^Color Depth:/ { depth=$3; next }
+    /^Scaling:/ { scaling=$2; next }
+    /^Origin:/ { gsub(/[(),]/,"",$2); split($2, o, ","); ox=o[1]; oy=o[2]; main=(ox==0 && oy==0)?1:0; next }
+    /^Enabled:/ { enabled=$2; printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", uuid, W, H, hz, depth, scaling, ox, oy, enabled, main; next }
+  '
+}
+
+# emit_cmd <record>... -> displayplacer 配置串
+emit_cmd() {
+  local cmd=""
+  for rec in "$@"; do
+    IFS='|' read -r uuid W H hz depth scaling ox oy enabled main <<< "$rec"
+    cmd+=" \"id:${uuid} res:${W}x${H} hz:${hz} color_depth:${depth} enabled:${enabled} scaling:${scaling} origin:(${ox},${oy}) degree:0\""
+  done
+  echo "$cmd"
+}
+
+# apply_records <record>...
+apply_records() {
+  local cmd
+  cmd="$(emit_cmd "$@")" || return 1
+  eval "$DPL $cmd"
+}
+
+# ---------- 命令 ----------
+
+usage() {
+  cat <<'EOF'
+bds — BetterDisplay 替代脚本 (约 80% 常用功能)
+
+  bds list                    列出所有显示器
+  bds off <spec>              关闭显示器 (真正断开,节能)
+  bds on  <spec>              重新打开显示器
+  bds ext-only                只留外置屏 (关闭内建屏,主机合盖/开盖均可)
+  bds dual                    恢复内建屏
+  bds bright <spec> <0-100>   设置亮度 (内置=系统亮度, 外置=DDC)
+  bds input <spec> <n>        切换外置输入源 (15=DP1 16=DP2 17=HDMI1 18=HDMI2 27=USB-C)
+  bds volume <spec> <0-100>   外置显示器音量 (DDC)
+  bds res <spec> <WxH>[@Hz] [scaling:on|off]   设置分辨率/刷新率/HiDPI
+  bds main <spec>             设为主屏
+  bds arrange <spec> <left-of|right-of|above|below> <spec>   调整位置
+  bds mirror <on|off>         镜像开关
+  bds save [名字]             保存当前布局+亮度
+  bds restore [名字]          恢复布局+亮度
+  bds profiles                列出已保存配置
+  bds wake                    全部点亮并恢复亮度
+
+spec: builtin/b(内置屏) external/e(外置屏) 数字id 显示器名片段
+EOF
+}
+
+cmd_list() {
+  printf "%-4s %-22s %-8s %-10s %s\n" "ID" "名称" "类型" "状态" "亮度"
+  while IFS=$'\t' read -r id builtin uuid name bright; do
+    [ -z "$id" ] && continue
+    local typ="外置" st="在线"
+    [ "$builtin" = "1" ] && typ="内置"
+    local act
+    act="$("$DPWR" list | awk -F'\t' -v i="$id" '$1==i {print $3}')"
+    [ "$act" = "0" ] && st="已关闭"
+    [ "$bright" = "-" ] && bright="DDC"
+    printf "%-4s %-22s %-8s %-10s %s\n" "$id" "$name" "$typ" "$st" "$bright"
+  done < <("$DCTL" list)
+  # 离线显示器 (displayctl 看不到)
+  while IFS=$'\t' read -r id builtin act uuid; do
+    [ -z "$id" ] && continue
+    if ! "$DCTL" list | awk -F'\t' -v i="$id" '$1==i {found=1} END {exit found?0:1}'; then
+      local typ="外置"; [ "$builtin" = "1" ] && typ="内置"
+      printf "%-4s %-22s %-8s %-10s %s\n" "$id" "(离线)" "$typ" "已关闭" "-"
+    fi
+  done < <("$DPWR" list)
+}
+
+cmd_off() {
+  local id; id="$(resolve "$1")" || { echo "找不到显示器: $1"; exit 1; }
+  local active
+  active="$("$DPWR" list | awk -F'\t' '$3==1 {n++} END {print n+0}')"
+  if [ "$active" -le 1 ]; then
+    echo "只剩一个显示器,拒绝关闭 (避免陷入无显示状态)"
+    exit 1
+  fi
+  "$DPWR" off "$id"
+}
+
+cmd_on() {
+  local id; id="$(resolve "$1")" || { echo "找不到显示器: $1"; exit 1; }
+  "$DPWR" on "$id"
+}
+
+cmd_bright() {
+  local id v; id="$(resolve "$1")"; v="$2"
+  if is_builtin "$id"; then
+    "$DCTL" set "$id" "$v"
+  else
+    local uuid; uuid="$(uuid_of "$id")"
+    "$DDC" display "$uuid" set luminance "$v"
+  fi
+}
+
+cmd_input() {
+  local id uuid; id="$(resolve "$1")"; uuid="$(uuid_of "$id")"
+  "$DDC" display "$uuid" set input "$2"
+}
+
+cmd_volume() {
+  local id uuid; id="$(resolve "$1")"; uuid="$(uuid_of "$id")"
+  "$DDC" display "$uuid" set volume "$2"
+}
+
+cmd_res() {
+  local id uuid; id="$(resolve "$1")"; uuid="$(uuid_of "$id")"
+  local wh="$2" W H hz=""
+  W="${wh%%x*}"; H="${wh##*x}"
+  if [[ "$H" == *@* ]]; then hz="${H##*@}"; H="${H%%@*}"; fi
+  local scaling="${3:-}"
+  local recs=()
+  while IFS= read -r rec; do
+    IFS='|' read -r u W2 H2 h2 d2 s2 ox oy en main <<< "$rec"
+    if [ "$u" = "$uuid" ]; then
+      [ -n "$hz" ] && h2="$hz"
+      [ -n "$scaling" ] && s2="${scaling#scaling:}"
+      rec="$u|$W|$H|$h2|$d2|$s2|$ox|$oy|$en|$main"
+    fi
+    recs+=("$rec")
+  done < <(dp_records)
+  apply_records "${recs[@]}"
+}
+
+cmd_main() {
+  local id uuid; id="$(resolve "$1")"; uuid="$(uuid_of "$id")"
+  local oldmain="" recs=()
+  while IFS= read -r rec; do
+    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    if [ "$main" = "1" ]; then oldmain="$rec"; fi
+    recs+=("$rec")
+  done < <(dp_records)
+  local newrecs=()
+  for rec in "${recs[@]}"; do
+    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    if [ "$u" = "$uuid" ]; then
+      newrecs+=("$u|$W|$H|$h|$d|$s|0|0|$en|1")
+    elif [ -n "$oldmain" ] && [ "$u" = "$(echo "$oldmain" | cut -d'|' -f1)" ]; then
+      local tw th; IFS='|' read -r _ tw th _ _ _ _ _ _ _ <<< "$rec"
+      newrecs+=("$u|$W|$H|$h|$d|$s|$tw|0|$en|0")
+    else
+      newrecs+=("$rec")
+    fi
+  done
+  apply_records "${newrecs[@]}"
+}
+
+cmd_arrange() {
+  local a b rel; a="$(uuid_of "$(resolve "$1")")"; rel="$2"; b="$(uuid_of "$(resolve "$3")")"
+  local recs=() bx=0 by=0 bw=0 bh=0 ax=0 ay=0 aw=0 ah=0
+  while IFS= read -r rec; do
+    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    recs+=("$rec")
+    if [ "$u" = "$a" ]; then ax=$ox; ay=$oy; aw=$W; ah=$H; fi
+    if [ "$u" = "$b" ]; then bx=$ox; by=$oy; bw=$W; bh=$H; fi
+  done < <(dp_records)
+  local nx="$ax" ny="$ay"
+  case "$rel" in
+    left-of)  nx=$((bx - aw)); ny=$by ;;
+    right-of) nx=$((bx + bw)); ny=$by ;;
+    above)    nx=$bx; ny=$((by - ah)) ;;
+    below)    nx=$bx; ny=$((by + bh)) ;;
+    *) echo "用法: bds arrange <spec> <left-of|right-of|above|below> <spec>"; exit 1 ;;
+  esac
+  local newrecs=()
+  for rec in "${recs[@]}"; do
+    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    if [ "$u" = "$a" ]; then
+      newrecs+=("$u|$W|$H|$h|$d|$s|$nx|$ny|$en|0")
+    else
+      newrecs+=("$rec")
+    fi
+  done
+  apply_records "${newrecs[@]}"
+}
+
+cmd_mirror() {
+  local onoff="$1" recs=() mainrec=""
+  while IFS= read -r rec; do
+    recs+=("$rec")
+    IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+    if [ "$main" = "1" ]; then mainrec="$rec"; fi
+  done < <(dp_records)
+  if [ "$onoff" = "on" ]; then
+    "$DPL" list 2>/dev/null | awk '/^displayplacer / {print; exit}' > "$CFG/.pre-mirror"
+    IFS='|' read -r mu mW mH mh md ms mox moy men mmain <<< "$mainrec"
+    local mirror_ids="$mu"
+    for rec in "${recs[@]}"; do
+      IFS='|' read -r u W H h d s ox oy en main <<< "$rec"
+      if [ "$u" != "$mu" ]; then mirror_ids+="+$u"; fi
+    done
+    eval "$DPL \"id:${mirror_ids} res:${mW}x${mH} hz:${mh} color_depth:${md} enabled:true scaling:${ms} origin:(0,0) degree:0\""
+  else
+    if [ -f "$CFG/.pre-mirror" ]; then
+      eval "$DPL $(cat "$CFG/.pre-mirror" | sed 's/^displayplacer //')"
+    else
+      echo "没有镜像前的配置,请手动设置或使用 bds restore"
+      exit 1
+    fi
+  fi
+}
+
+cmd_save() {
+  local name="${1:-default}"
+  local f="$CFG/$name.profile"
+  {
+    echo "# $(date)"
+    "$DPL" list 2>/dev/null | awk '/^displayplacer / {print; exit}'
+    local bid; bid="$(resolve builtin)"
+    local bv; bv="$("$DCTL" get "$bid" 2>/dev/null)"
+    [ -n "$bv" ] && echo "brightness=$bv"
+  } > "$f"
+  echo "已保存到 $f"
+}
+
+cmd_restore() {
+  local name="${1:-default}"
+  local f="$CFG/$name.profile"
+  [ -f "$f" ] || { echo "没有配置: $name (先用 bds save 保存)"; exit 1; }
+  local cmd bright
+  cmd="$(grep '^displayplacer ' "$f" | sed 's/^displayplacer //')"
+  bright="$(grep '^brightness=' "$f" | head -1 | cut -d= -f2)"
+  eval "$DPL $cmd"
+  if [ -n "$bright" ]; then
+    local bid; bid="$(resolve builtin)"
+    "$DCTL" set "$bid" "$bright" 2>/dev/null
+  fi
+  echo "已恢复 $name"
+}
+
+cmd_profiles() {
+  ls "$CFG"/*.profile 2>/dev/null | sed 's|.*/||; s|\.profile$||' || echo "(无)"
+}
+
+cmd_wake() {
+  while IFS=$'\t' read -r id builtin act uuid; do
+    [ -z "$id" ] && continue
+    if [ "$act" = "0" ]; then "$DPWR" on "$id"; fi
+  done < <("$DPWR" list)
+  sleep 1
+  # 物理显示器全丢(只剩虚拟屏)时,按历史 id 逐个尝试恢复
+  if ! "$DPWR" list | awk -F'\t' '$2==1 {found=1} END {exit found ? 0 : 1}'; then
+    for id in 1 2 3 4; do
+      "$DPWR" on "$id" 2>/dev/null
+    done
+    sleep 1
+  fi
+  local bid; bid="$(resolve builtin)"
+  "$DCTL" set "$bid" 70 2>/dev/null
+  echo "已全部唤醒"
+}
+
+# ---------- 入口 ----------
+
+case "${1:-}" in
+  list)          cmd_list ;;
+  off)           cmd_off "${2:-}" ;;
+  on)            cmd_on "${2:-}" ;;
+  ext-only)      cmd_off builtin ;;
+  dual)          cmd_on builtin ;;
+  bright)        cmd_bright "${2:-}" "${3:-}" ;;
+  input)         cmd_input "${2:-}" "${3:-}" ;;
+  volume)        cmd_volume "${2:-}" "${3:-}" ;;
+  res)           cmd_res "${2:-}" "${3:-}" "${4:-}" ;;
+  main)          cmd_main "${2:-}" ;;
+  arrange)       cmd_arrange "${2:-}" "${3:-}" "${4:-}" ;;
+  mirror)        cmd_mirror "${2:-}" ;;
+  save)          cmd_save "${2:-}" ;;
+  restore)       cmd_restore "${2:-}" ;;
+  profiles)      cmd_profiles ;;
+  wake)          cmd_wake ;;
+  ""|help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac
