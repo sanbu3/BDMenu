@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct MenuView: View {
     @Environment(DisplayManager.self) private var dm
     var body: some View {

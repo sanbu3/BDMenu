@@ -13,7 +13,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Shell syntax
         run: bash -n build.sh install.sh make_icon.sh cli/bds
       - name: Core regression tests and app compilation

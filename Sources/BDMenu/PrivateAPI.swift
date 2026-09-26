@@ -94,8 +94,8 @@ enum PrivateAPI {
     static func getBrightness(_ id: CGDirectDisplayID) -> Double? {
         guard let fn = dsGet else { return nil }
         var v: Float = -1
-        guard fn(id, &v) == 0, v >= 0 else { return nil }
-        return Double(v)
+        guard fn(id, &v) == 0, v.isFinite, v >= 0 else { return nil }
+        return Double(min(1, v))
     }
 
     static func setBrightness(_ id: CGDirectDisplayID, _ value: Double) -> Bool {

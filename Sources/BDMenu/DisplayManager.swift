@@ -87,11 +87,11 @@ final class DisplayManager {
         CGDisplayRegisterReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refreshPermission(); self?.loginStatus = SMAppService.mainApp.status }
+            Task { @MainActor [weak self] in self?.refreshPermission(); self?.loginStatus = SMAppService.mainApp.status }
         })
         workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
                                                                                      object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refreshPermission(); self?.scheduleRefresh(reprobe: true) }
+            Task { @MainActor [weak self] in self?.refreshPermission(); self?.scheduleRefresh(reprobe: true) }
         })
         keys.onAdjust = { [weak self] delta, fine in self?.handleBrightnessKey(delta: delta, fine: fine) ?? false }
         refreshPermission()
@@ -105,8 +105,8 @@ final class DisplayManager {
         CGDisplayRemoveReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
         changeTask?.cancel(); detailsTask?.cancel(); workflowTask?.cancel(); permissionTask?.cancel(); hudHideTask?.cancel()
         brightnessTasks.values.forEach { $0.cancel() }; volumeTasks.values.forEach { $0.cancel() }
-        observers.forEach(NotificationCenter.default.removeObserver)
-        workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         observers.removeAll(); workspaceObservers.removeAll()
         keys.uninstall()
         for id in Array(originalGamma.keys) { restoreGamma(id) }
@@ -202,7 +202,8 @@ final class DisplayManager {
             if isBuiltin { knownBuiltinID = id }
             if controls[id] == nil || previous[id]?.uuid != uuid {
                 var value = Controls()
-                value.brightness = UserDefaults.standard.object(forKey: "brightness.\(uuid)") as? Double ?? 100
+                let saved = UserDefaults.standard.object(forKey: "brightness.\(uuid)") as? Double ?? 100
+                value.brightness = saved.isFinite ? min(100, max(0, saved)) : 100
                 controls[id] = value
             }
             if isBuiltin, let value = PrivateAPI.getBrightness(id) { controls[id]?.brightness = value * 100 }
@@ -275,7 +276,7 @@ final class DisplayManager {
             let maximum = await Subprocess.run("m1ddc", ["display", uuid, "max", "luminance"], timeout: 2)
             guard !Task.isCancelled, generation == expected else { return }
             let maxValue = maximum.succeeded ? Double(maximum.output) ?? 100 : 100
-            controls[display.id]?.maximumBrightness = maxValue > 0 ? maxValue : 100
+            controls[display.id]?.maximumBrightness = maxValue.isFinite && maxValue > 0 ? maxValue : 100
             // A concurrent slider write wins over an older probe result.
             if brightnessTasks[display.id] == nil {
                 controls[display.id]?.brightness = min(100, max(0, value / state(display.id).maximumBrightness * 100))
@@ -291,7 +292,7 @@ final class DisplayManager {
             let maximum = await Subprocess.run("m1ddc", ["display", uuid, "max", "volume"], timeout: 2)
             guard !Task.isCancelled, generation == expected else { return }
             let maxValue = maximum.succeeded ? Double(maximum.output) ?? 100 : 100
-            controls[display.id]?.maximumVolume = maxValue > 0 ? maxValue : 100
+            controls[display.id]?.maximumVolume = maxValue.isFinite && maxValue > 0 ? maxValue : 100
             controls[display.id]?.hasVolume = true
             if volumeTasks[display.id] == nil { controls[display.id]?.volume = min(100, value / state(display.id).maximumVolume * 100) }
         } else { controls[display.id]?.hasVolume = false }
@@ -312,22 +313,29 @@ final class DisplayManager {
         guard state(id).dimming != .unknown else { return }
         controls[id]?.brightness = value
         UserDefaults.standard.set(value, forKey: "brightness.\(display.uuid)")
-        brightnessTasks[id]?.cancel()
+        guard brightnessTasks[id] == nil else { return }
+        // One worker per display drains the latest value at a bounded rate. Continuous
+        // key repeat must not postpone every write until the user releases the key.
         brightnessTasks[id] = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(70)) } catch { return }
-            guard let self, self.displays.contains(where: { $0.id == id && $0.uuid == display.uuid && $0.enabled }) else { return }
-            if self.state(id).dimming == .software {
-                self.applySoftwareDim(id, value)
-            } else {
-                let raw = Int((value / 100 * self.state(id).maximumBrightness).rounded())
-                let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "luminance", "\(raw)"], timeout: 2)
-                guard !Task.isCancelled, self.displays.contains(where: { $0.id == id && $0.uuid == display.uuid && $0.enabled }) else { return }
-                if !result.succeeded || result.output.localizedCaseInsensitiveContains("DDC communication failure") {
-                    self.lastError = "\(display.name) 的硬件亮度写入失败，请点击刷新重试检测。"
-                    // A transient DDC error must not silently stack software dimming on hardware dimming.
+            guard let self else { return }
+            defer { self.brightnessTasks[id] = nil }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(70)) } catch { return }
+                guard self.displays.contains(where: { $0.id == id && $0.uuid == display.uuid && $0.enabled }) else { return }
+                let target = self.state(id).brightness
+                if self.state(id).dimming == .software {
+                    self.applySoftwareDim(id, target)
+                } else {
+                    let raw = Int((target / 100 * self.state(id).maximumBrightness).rounded())
+                    let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "luminance", "\(raw)"], timeout: 2)
+                    guard !Task.isCancelled, self.displays.contains(where: { $0.id == id && $0.uuid == display.uuid && $0.enabled }) else { return }
+                    if !result.succeeded || result.output.localizedCaseInsensitiveContains("DDC communication failure") {
+                        self.lastError = "\(display.name) 的硬件亮度写入失败，请点击刷新重试检测。"
+                        return
+                    }
                 }
+                if self.state(id).brightness == target { return }
             }
-            if !Task.isCancelled { self.brightnessTasks[id] = nil }
         }
     }
 
@@ -335,15 +343,20 @@ final class DisplayManager {
         guard value.isFinite, state(display.id).hasVolume else { return }
         let value = min(100, max(0, value))
         controls[display.id]?.volume = value
-        volumeTasks[display.id]?.cancel()
+        guard volumeTasks[display.id] == nil else { return }
         volumeTasks[display.id] = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             guard let self else { return }
-            let raw = Int((value / 100 * self.state(display.id).maximumVolume).rounded())
-            let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "volume", "\(raw)"], timeout: 2)
-            guard !Task.isCancelled else { return }
-            if !result.succeeded { self.lastError = "显示器音量设置失败。" }
-            self.volumeTasks[display.id] = nil
+            defer { self.volumeTasks[display.id] = nil }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard self.displays.contains(where: { $0.id == display.id && $0.uuid == display.uuid && $0.enabled }) else { return }
+                let target = self.state(display.id).volume
+                let raw = Int((target / 100 * self.state(display.id).maximumVolume).rounded())
+                let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "volume", "\(raw)"], timeout: 2)
+                guard !Task.isCancelled else { return }
+                if !result.succeeded { self.lastError = "显示器音量设置失败。"; return }
+                if self.state(display.id).volume == target { return }
+            }
         }
     }
 
@@ -431,12 +444,18 @@ final class DisplayManager {
             guard let self, self.autoWorkflow, !self.isApplying else { return }
             self.scanDisplays()
             guard self.externalOnline else { return }
+            if let builtin = self.builtin, builtin.enabled {
+                self.preWorkflowBrightness = self.state(builtin.id).brightness
+            }
             await self.restoreLayout(silent: true)
             guard !Task.isCancelled, self.autoWorkflow else { return }
             self.scanDisplays()
-            guard self.externalOnline, let builtin = self.builtin, builtin.enabled else { return }
-            self.preWorkflowBrightness = self.state(builtin.id).brightness
-            self.changedBuiltinForWorkflow = self.setEnabled(builtin.id, false)
+            guard self.externalOnline, let builtin = self.builtin else { return }
+            if builtin.enabled {
+                self.changedBuiltinForWorkflow = self.setEnabled(builtin.id, false)
+            } else if self.preWorkflowBrightness != nil {
+                self.changedBuiltinForWorkflow = true
+            }
         }
     }
 
