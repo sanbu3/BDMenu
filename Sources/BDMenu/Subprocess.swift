@@ -1,57 +1,20 @@
 import Foundation
+import DisplayCore
+import os
 
 enum Subprocess {
-
-    static var resourceDir: String {
-        Bundle.main.resourcePath ?? Bundle.main.bundlePath + "/../Resources"
-    }
-
-    static var m1ddcBin: String { resourceDir + "/m1ddc" }
-    static var displayplacerBin: String { resourceDir + "/displayplacer" }
-
-    @discardableResult
-    static func run(_ bin: String, _ args: [String]) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: bin)
-        p.arguments = args
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = Pipe()
-        do {
-            try p.run()
-            p.waitUntilExit()
-        } catch {
-            return nil
-        }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func m1ddc(_ args: [String]) -> String? {
-        run(m1ddcBin, args)
-    }
-
-    static func displayplacer(_ args: [String]) -> String? {
-        run(displayplacerBin, args)
-    }
-
-    static func tokenize(_ s: String) -> [String] {
-        var tokens: [String] = []
-        var cur = ""
-        var inQuote = false
-        for ch in s {
-            if ch == "\"" {
-                inQuote.toggle()
-                continue
+    private static let queue = DispatchQueue(label: "com.local.BDMenu.commands", qos: .userInitiated)
+    private static let logger = Logger(subsystem: "com.local.BDMenu", category: "Commands")
+    static func run(_ tool: String, _ arguments: [String], timeout: TimeInterval = 4) async -> CommandResult {
+        let path = Bundle.main.url(forResource: tool, withExtension: nil)?.path ?? ""
+        return await withCheckedContinuation { continuation in
+            queue.async {
+                let result = CommandRunner.run(path, arguments, timeout: timeout)
+                if !result.succeeded {
+                    logger.error("\(tool, privacy: .public) failed (\(result.status), timeout=\(result.timedOut)): \(result.error, privacy: .public)")
+                }
+                continuation.resume(returning: result)
             }
-            if ch == " " && !inQuote {
-                if !cur.isEmpty { tokens.append(cur); cur = "" }
-                continue
-            }
-            cur.append(ch)
         }
-        if !cur.isEmpty { tokens.append(cur) }
-        return tokens
     }
 }

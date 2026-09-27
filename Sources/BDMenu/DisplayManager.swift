@@ -4,10 +4,17 @@ import Observation
 import ServiceManagement
 import AppKit
 import SwiftUI
+import DisplayCore
 
-@Observable
+private let displayCallback: CGDisplayReconfigurationCallBack = { _, flags, context in
+    guard !flags.contains(.beginConfigurationFlag), let context else { return }
+    let manager = Unmanaged<DisplayManager>.fromOpaque(context).takeUnretainedValue()
+    Task { @MainActor in manager.scheduleRefresh() }
+}
+
+@MainActor @Observable
 final class DisplayManager {
-
+    enum Dimming: String { case unknown, hardware, software }
     struct DisplayInfo: Identifiable, Equatable {
         let id: CGDirectDisplayID
         let uuid: String
@@ -15,574 +22,571 @@ final class DisplayManager {
         let isBuiltin: Bool
         var enabled: Bool
     }
-
-    struct LayoutRecord {
-        var uuid = ""
-        var w = 0
-        var h = 0
-        var hz = 0
-        var depth = 8
-        var scaling = "on"
-        var x = 0
-        var y = 0
-        var isMain: Bool { x == 0 && y == 0 }
+    struct Controls {
+        var brightness: Double = 100
+        var volume: Double = 50
+        var maximumBrightness: Double = 100
+        var maximumVolume: Double = 100
+        var input = 0
+        var hasVolume = false
+        var hasInput = false
+        var dimming: Dimming = .unknown
+        var modes: [DisplayMode] = []
+        var currentMode = -1
     }
-
-    struct ModeInfo {
-        var num = 0
-        var w = 0
-        var h = 0
-        var hz = 0
-        var depth = 8
-        var scaling = "on"
-        var label: String { "\(w)x\(h) @ \(hz)Hz" + (scaling == "on" ? " (HiDPI)" : "") }
+    private struct Gamma {
+        var red: [CGGammaValue]
+        var green: [CGGammaValue]
+        var blue: [CGGammaValue]
     }
 
     var displays: [DisplayInfo] = []
-    var builtinBrightness: Double = 50
-    var externalBrightness: Double = 50
-    var externalVolume: Double = 50
-    var hasVolume = false
-    var externalInput = 0
-    var externalModes: [ModeInfo] = []
-    var currentMode = -1
-    var mirrored = false
+    var controls: [CGDirectDisplayID: Controls] = [:]
     var mainID: CGDirectDisplayID = 0
+    var mirrored = false
     var lastError: String?
-    var autoWorkflow: Bool
-    var dimMode = "ddc"
+    var isApplying = false
+    var autoWorkflow = UserDefaults.standard.bool(forKey: "autoWorkflow")
+    var followPointerEnabled = UserDefaults.standard.bool(forKey: "followPointer")
+    var keysTrusted = false
+    var keysInstalled = false
+    var loginStatus = SMAppService.mainApp.status
 
-    private var wasExternalOnline = false
-    private var wasExternalPresent = false
-    private var started = false
-    private var pendingWork: DispatchWorkItem?
-    private var lastAutoCapture = Date.distantPast
-    private var workflowPreBrightness: Double?
-    private let keys = BrightnessKeys()
-    private var hud: NSPanel?
-    private var hudHideWork: DispatchWorkItem?
+    @ObservationIgnored private let keys = BrightnessKeys()
+    @ObservationIgnored private var started = false
+    @ObservationIgnored private var changeTask: Task<Void, Never>?
+    @ObservationIgnored private var detailsTask: Task<Void, Never>?
+    @ObservationIgnored private var captureTask: Task<Void, Never>?
+    @ObservationIgnored private var workflowTask: Task<Void, Never>?
+    @ObservationIgnored private var permissionTask: Task<Void, Never>?
+    @ObservationIgnored private var brightnessTasks: [CGDirectDisplayID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var volumeTasks: [CGDirectDisplayID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var workspaceObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private var originalGamma: [CGDirectDisplayID: Gamma] = [:]
+    @ObservationIgnored private var knownBuiltinID: CGDirectDisplayID?
+    @ObservationIgnored private var previousExternals = Set<String>()
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var preWorkflowBrightness: Double?
+    @ObservationIgnored private var changedBuiltinForWorkflow = false
+    @ObservationIgnored private var suppressCaptureUntil = Date.distantPast
+    @ObservationIgnored private var hud: NSPanel?
+    @ObservationIgnored private var hudHideTask: Task<Void, Never>?
 
     let inputOptions: [(Int, String)] = [(15, "DP 1"), (16, "DP 2"), (17, "HDMI 1"), (18, "HDMI 2"), (27, "USB-C")]
-
-    init() {
-        autoWorkflow = UserDefaults.standard.bool(forKey: "autoWorkflow")
-    }
-
     var builtin: DisplayInfo? { displays.first { $0.isBuiltin } }
-    var external: DisplayInfo? { displays.first { !$0.isBuiltin } }
-    var builtinID: CGDirectDisplayID? { builtin?.id }
-    var externalUUID: String? { external?.uuid }
-    var externalOnline: Bool { external?.enabled ?? false }
-    var externalPresent: Bool { external != nil }
-    var builtinOnline: Bool { builtin?.enabled ?? false }
-    var launchAtLogin: Bool { SMAppService.mainApp.status == .enabled }
-    var followPointerEnabled: Bool { UserDefaults.standard.bool(forKey: "followPointer") }
-    var keysTrusted: Bool { BrightnessKeys.isTrusted() }
-
-    func setFollowPointer(_ on: Bool) {
-        UserDefaults.standard.set(on, forKey: "followPointer")
-        if on {
-            if !BrightnessKeys.isTrusted() {
-                _ = BrightnessKeys.requestAccess()
-            }
-            installKeysIfNeeded()
-        } else {
-            keys.uninstall()
-        }
-    }
-
-    func installKeysIfNeeded() {
-        guard UserDefaults.standard.bool(forKey: "followPointer"), BrightnessKeys.isTrusted() else { return }
-        guard !keys.installed else { return }
-        keys.onAdjust = { [weak self] delta, fine in
-            self?.handleBrightnessKey(delta: delta, fine: fine) ?? false
-        }
-        keys.install()
-    }
-
-    func displayUnderMouse() -> CGDirectDisplayID? {
-        let m = NSEvent.mouseLocation
-        let mainBounds = CGDisplayBounds(CGMainDisplayID())
-        let gx = m.x
-        let gy = mainBounds.height - m.y
-        var online = [CGDirectDisplayID](repeating: 0, count: 32)
-        var count: UInt32 = 0
-        CGGetOnlineDisplayList(32, &online, &count)
-        for i in 0..<Int(count) {
-            if CGDisplayBounds(online[i]).contains(CGPoint(x: gx, y: gy)) {
-                return online[i]
-            }
-        }
-        return nil
-    }
-
-    func handleBrightnessKey(delta: Int, fine: Bool) -> Bool {
-        guard let id = displayUnderMouse() else { return false }
-        let step = fine ? 1.6 : 6.25
-        if CGDisplayIsBuiltin(id) != 0 {
-            guard builtinOnline else { return false }
-            let v = min(100, max(0, builtinBrightness + Double(delta) * step))
-            setBuiltinBrightness(v)
-            return true
-        } else {
-            guard externalOnline, id == external?.id else { return false }
-            let v = min(100, max(0, externalBrightness + Double(delta) * step))
-            setExternalBrightness(v)
-            showHUD(value: Int(v.rounded()), on: id)
-            return true
-        }
-    }
-
-    func showHUD(value: Int, on displayID: CGDirectDisplayID) {
-        let size = NSSize(width: 170, height: 58)
-        if hud == nil {
-            let panel = NSPanel(
-                contentRect: NSRect(origin: .zero, size: size),
-                styleMask: [.borderless, .nonactivatingPanel],
-                backing: .buffered,
-                defer: false
-            )
-            panel.level = .statusBar
-            panel.isOpaque = false
-            panel.backgroundColor = .clear
-            panel.hasShadow = false
-            panel.ignoresMouseEvents = true
-            panel.hidesOnDeactivate = false
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            panel.contentView = NSHostingView(rootView: HUDView(value: value))
-            hud = panel
-        }
-        if let hosting = hud?.contentView as? NSHostingView<HUDView> {
-            hosting.rootView = HUDView(value: value)
-        }
-        let b = CGDisplayBounds(displayID)
-        let mainH = CGDisplayBounds(CGMainDisplayID()).height
-        let gx = b.minX + b.width / 2 - size.width / 2
-        let gy = b.minY + b.height * 0.72 - size.height / 2
-        hud?.setFrame(NSRect(x: gx, y: mainH - gy - size.height, width: size.width, height: size.height), display: true)
-        hud?.alphaValue = 0
-        hud?.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            hud?.animator().alphaValue = 1
-        }
-        hudHideWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in
-            guard let self, let hud = self.hud else { return }
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.35
-                hud.animator().alphaValue = 0
-            }, completionHandler: {
-                hud.orderOut(nil)
-            })
-        }
-        hudHideWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
-    }
+    var externalOnline: Bool { displays.contains { !$0.isBuiltin && $0.enabled } }
+    var launchAtLogin: Bool { loginStatus == .enabled || loginStatus == .requiresApproval }
+    var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2" }
+    private var connectedIDs: Set<String> { Set(displays.map(\.uuid).filter { !$0.isEmpty }) }
+    private var layoutKey: String { "layout.v2." + connectedIDs.sorted().joined(separator: "+") }
+    func state(_ id: CGDirectDisplayID) -> Controls { controls[id] ?? Controls() }
 
     func start() {
         guard !started else { return }
         started = true
-        CGDisplayRegisterReconfigurationCallback({ _, _, ctx in
-            guard let ctx else { return }
-            let mgr = Unmanaged<DisplayManager>.fromOpaque(ctx).takeUnretainedValue()
-            mgr.scheduleHandleChange()
-        }, Unmanaged.passUnretained(self).toOpaque())
-        scheduleHandleChange()
-        installKeysIfNeeded()
+        CGDisplayRegisterReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
+        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshPermission(); self?.loginStatus = SMAppService.mainApp.status }
+        })
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+                                                                                     object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshPermission(); self?.scheduleRefresh(reprobe: true) }
+        })
+        keys.onAdjust = { [weak self] delta, fine in self?.handleBrightnessKey(delta: delta, fine: fine) ?? false }
+        refreshPermission()
+        monitorPermissionIfNeeded()
+        scheduleRefresh(reprobe: true)
     }
 
-    func scheduleHandleChange() {
-        pendingWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in self?.handleDisplayChange() }
-        pendingWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: w)
+    func stop() {
+        guard started else { return }
+        started = false
+        CGDisplayRemoveReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
+        changeTask?.cancel(); detailsTask?.cancel(); captureTask?.cancel(); workflowTask?.cancel(); permissionTask?.cancel(); hudHideTask?.cancel()
+        brightnessTasks.values.forEach { $0.cancel() }; volumeTasks.values.forEach { $0.cancel() }
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        observers.removeAll(); workspaceObservers.removeAll()
+        keys.uninstall()
+        for id in Array(originalGamma.keys) { restoreGamma(id) }
+        if changedBuiltinForWorkflow, let id = knownBuiltinID {
+            _ = PrivateAPI.setDisplayEnabled(id: id, enabled: true)
+            if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
+        }
+        hud?.orderOut(nil)
     }
 
-    func handleDisplayChange() {
-        refresh()
-        if externalPresent, !externalOnline, !wasExternalPresent {
-            if let e = external {
-                _ = PrivateAPI.setDisplayEnabled(id: e.id, enabled: true)
-            }
-            scheduleHandleChange()
-            return
-        }
-        if !externalPresent {
-            if let b = builtin, !b.enabled {
-                _ = PrivateAPI.setDisplayEnabled(id: b.id, enabled: true)
-                if let v = workflowPreBrightness {
-                    setBuiltinBrightness(v)
-                    workflowPreBrightness = nil
-                }
-            } else if builtin == nil {
-                for id: CGDirectDisplayID in [1, 2, 3, 4] {
-                    _ = PrivateAPI.setDisplayEnabled(id: id, enabled: true)
-                }
-            }
-            scheduleHandleChange()
-            return
-        }
-        if externalOnline, !wasExternalOnline {
-            probeExternal()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                self?.captureAutoLayout()
-            }
-            if autoWorkflow {
-                restoreLayout(applyBrightness: false)
-                if let b = builtin, b.enabled {
-                    workflowPreBrightness = builtinBrightness
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                        self?.applyWorkflowIfRelevant()
-                    }
-                }
-            }
-        }
-        if externalOnline {
-            refreshExternalModes()
+    func setFollowPointer(_ enabled: Bool) {
+        followPointerEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "followPointer")
+        if enabled && !BrightnessKeys.isTrusted() { BrightnessKeys.requestAccess() }
+        refreshPermission()
+        monitorPermissionIfNeeded()
+    }
+    func requestPermission() {
+        BrightnessKeys.requestAccess()
+        BrightnessKeys.openSettings()
+        refreshPermission()
+        monitorPermissionIfNeeded()
+    }
+    func refreshPermission() {
+        keysTrusted = BrightnessKeys.isTrusted()
+        if followPointerEnabled && keysTrusted {
+            keysInstalled = keys.install()
         } else {
-            externalModes = []
-            currentMode = -1
-            hasVolume = false
+            keys.uninstall()
+            keysInstalled = false
         }
-        wasExternalOnline = externalOnline
-        wasExternalPresent = externalPresent
     }
-
-    func applyWorkflowIfRelevant() {
-        guard autoWorkflow, externalOnline, let b = builtin, b.enabled else { return }
-        _ = PrivateAPI.setDisplayEnabled(id: b.id, enabled: false)
-        scheduleHandleChange()
-    }
-
-    func setAutoWorkflow(_ on: Bool) {
-        autoWorkflow = on
-        UserDefaults.standard.set(on, forKey: "autoWorkflow")
-        if on {
-            if externalPresent, !externalOnline, let e = external {
-                _ = PrivateAPI.setDisplayEnabled(id: e.id, enabled: true)
-            } else if externalOnline {
-                restoreLayout(applyBrightness: false)
-                if let b = builtin, b.enabled {
-                    workflowPreBrightness = builtinBrightness
-                    _ = PrivateAPI.setDisplayEnabled(id: b.id, enabled: false)
-                }
+    private func monitorPermissionIfNeeded() {
+        permissionTask?.cancel()
+        guard followPointerEnabled else { return }
+        // Independent of the menu view: granting or revoking access works with the panel closed.
+        permissionTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                guard let self else { return }
+                self.refreshPermission()
             }
-            scheduleHandleChange()
-        } else {
-            if let b = builtin, !b.enabled {
-                _ = PrivateAPI.setDisplayEnabled(id: b.id, enabled: true)
-                if let v = workflowPreBrightness {
-                    setBuiltinBrightness(v)
-                    workflowPreBrightness = nil
-                }
-            }
-            scheduleHandleChange()
         }
     }
 
-    func setLaunchAtLogin(_ on: Bool) {
-        do {
-            if on {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
+    func panelOpened() {
+        refreshPermission()
+        loginStatus = SMAppService.mainApp.status
+        scanDisplays()
+        refreshDetails(reprobe: false)
+    }
+    func scheduleRefresh(reprobe: Bool = false) {
+        changeTask?.cancel()
+        changeTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            guard let self, self.started else { return }
+            let old = self.previousExternals
+            self.scanDisplays()
+            let now = Set(self.displays.filter { !$0.isBuiltin }.map(\.uuid))
+            self.previousExternals = now
+            self.recoverBuiltinIfNeeded()
+            if self.autoWorkflow && !now.subtracting(old).isEmpty {
+                self.scheduleWorkflow()
             }
-        } catch {
-            lastError = "登录启动设置失败,请在 系统设置→登录项 手动添加"
+            self.refreshDetails(reprobe: reprobe)
         }
     }
 
-    func refresh() {
-        var online = [CGDirectDisplayID](repeating: 0, count: 32)
+    private func scanDisplays() {
+        var online = [CGDirectDisplayID](repeating: 0, count: 64)
         var count: UInt32 = 0
-        CGGetOnlineDisplayList(32, &online, &count)
-        let onlineSet = Set(online.prefix(Int(count)))
-        let allIDs = PrivateAPI.allDisplayIDs()
-
+        guard CGGetOnlineDisplayList(64, &online, &count) == .success else { return }
+        let onlineIDs = Set(online.prefix(Int(count)))
+        let allIDs = Set(PrivateAPI.allDisplayIDs()).union(onlineIDs)
+        let previous = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
         var result: [DisplayInfo] = []
-        for id in onlineSet.sorted() {
+        for id in allIDs.sorted() {
             let info = PrivateAPI.displayInfo(id) ?? [:]
-            let uuid = info["kCGDisplayUUID"] as? String ?? ""
+            let isBuiltin = CGDisplayIsBuiltin(id) != 0 || previous[id]?.isBuiltin == true || id == knownBuiltinID
+            let virtual = (info["kCGDisplayIsVirtualDevice"] as? Bool ?? false) || (info["kCGDisplayIsAirPlay"] as? Bool ?? false)
+            if virtual && !isBuiltin { continue }
             let names = info["DisplayProductName"] as? [String: String]
-            let isBuiltin = CGDisplayIsBuiltin(id) != 0
-            let isVirtual = (info["kCGDisplayIsVirtualDevice"] as? Bool ?? false)
-                || (info["kCGDisplayIsAirPlay"] as? Bool ?? false)
-            if isVirtual && !isBuiltin { continue }
-            let name = names?["en_US"] ?? names?.values.first ?? (isBuiltin ? "内建显示器" : "外置显示器")
-            result.append(DisplayInfo(id: id, uuid: uuid, name: name, isBuiltin: isBuiltin, enabled: true))
+            var uuid = info["kCGDisplayUUID"] as? String ?? previous[id]?.uuid ?? ""
+            if uuid.isEmpty, let displayUUID = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() {
+                uuid = CFUUIDCreateString(nil, displayUUID) as String
+            }
+            // Unknown offline IDs cannot safely be used as physical display targets.
+            guard !uuid.isEmpty || isBuiltin else { continue }
+            let name = names?["zh_CN"] ?? names?["en_US"] ?? names?.values.sorted().first
+                ?? previous[id]?.name ?? (isBuiltin ? "内建显示器" : "外置显示器")
+            let enabled = onlineIDs.contains(id) && (CGDisplayIsActive(id) != 0 || CGDisplayIsInMirrorSet(id) != 0)
+            result.append(DisplayInfo(id: id, uuid: uuid, name: name, isBuiltin: isBuiltin, enabled: enabled))
+            if isBuiltin { knownBuiltinID = id }
+            if controls[id] == nil || previous[id]?.uuid != uuid {
+                var value = Controls()
+                let saved = UserDefaults.standard.object(forKey: "brightness.\(uuid)") as? Double ?? 100
+                value.brightness = saved.isFinite ? min(100, max(0, saved)) : 100
+                controls[id] = value
+            }
+            if isBuiltin, let value = PrivateAPI.getBrightness(id) { controls[id]?.brightness = value * 100 }
         }
-        for id in allIDs where !onlineSet.contains(id) {
-            let isBuiltin = CGDisplayIsBuiltin(id) != 0
-            result.append(DisplayInfo(id: id, uuid: "", name: isBuiltin ? "内建显示器" : "外置显示器", isBuiltin: isBuiltin, enabled: false))
+        if result != displays { generation += 1 }
+        let retained = Set(result.map(\.id))
+        for id in Array(controls.keys) where !retained.contains(id) {
+            brightnessTasks.removeValue(forKey: id)?.cancel()
+            volumeTasks.removeValue(forKey: id)?.cancel()
+            originalGamma.removeValue(forKey: id)
+            controls.removeValue(forKey: id)
         }
-        displays = result
+        displays = result.sorted { a, b in a.isBuiltin != b.isBuiltin ? a.isBuiltin : a.id < b.id }
         mainID = CGMainDisplayID()
+        mirrored = displays.contains { $0.enabled && CGDisplayIsInMirrorSet($0.id) != 0 }
+    }
 
-        if let b = builtinID, let v = PrivateAPI.getBrightness(b) {
-            builtinBrightness = v * 100
-        }
-        if externalOnline, dimMode == "ddc", let u = externalUUID,
-           let s = Subprocess.m1ddc(["display", u, "get", "luminance"]),
-           let v = Double(s) {
-            externalBrightness = v
-        }
-
-        if externalOnline, Date().timeIntervalSince(lastAutoCapture) > 8 {
-            captureAutoLayout()
+    private func recoverBuiltinIfNeeded() {
+        guard !externalOnline else { return }
+        guard let id = builtin?.id ?? knownBuiltinID else { return }
+        if builtin?.enabled != true {
+            if PrivateAPI.setDisplayEnabled(id: id, enabled: true) {
+                if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
+                changedBuiltinForWorkflow = false
+                preWorkflowBrightness = nil
+                // The system reconfiguration callback schedules the follow-up. No perpetual polling loop.
+            } else { lastError = "内建屏恢复失败，请尝试“全部点亮”或重新连接外置屏。" }
+        } else if changedBuiltinForWorkflow {
+            if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
+            changedBuiltinForWorkflow = false
+            preWorkflowBrightness = nil
         }
     }
 
-    func captureAutoLayout() {
-        guard externalOnline else { return }
-        lastAutoCapture = Date()
-        let recs = layoutRecords()
-        guard !recs.isEmpty else { return }
-        UserDefaults.standard.set(emitConfig(recs), forKey: "savedLayout")
-        UserDefaults.standard.set(builtinBrightness, forKey: "savedBrightness")
-    }
-
-    func probeExternal() {
-        guard let u = externalUUID else { return }
-        if let s = Subprocess.m1ddc(["display", u, "get", "luminance"]), let v = Double(s) {
-            dimMode = "ddc"
-            externalBrightness = v
-        } else {
-            dimMode = "soft"
-            if let id = external?.id {
-                applySoftwareDim(id, externalBrightness)
-            }
-        }
-        if let s = Subprocess.m1ddc(["display", u, "get", "volume"]), let v = Double(s) {
-            hasVolume = true
-            externalVolume = v
-        } else {
-            hasVolume = false
-        }
-        if let s = Subprocess.m1ddc(["display", u, "get", "input"]), let v = Int(s), v > 0 {
-            externalInput = v
-        }
-    }
-
-    func refreshExternalModes() {
-        guard let u = externalUUID else { return }
-        let out = Subprocess.displayplacer(["list"]) ?? ""
-        var inBlock = false
-        var modes: [ModeInfo] = []
-        var current = -1
-        for raw in out.components(separatedBy: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("Persistent screen id:") {
-                inBlock = line.contains(u)
-                continue
-            }
-            guard inBlock else { continue }
-            if line.hasPrefix("Execute") { break }
-            guard line.hasPrefix("mode ") else { continue }
-            var m = ModeInfo()
-            for p in line.components(separatedBy: " ") {
-                if p.hasPrefix("mode") && p.contains(":") {
-                    m.num = Int(p.split(separator: ":").last ?? "0") ?? 0
-                } else if p.hasPrefix("res:") {
-                    let wh = p.dropFirst(4).split(separator: "x")
-                    if wh.count == 2 {
-                        m.w = Int(wh[0]) ?? 0
-                        m.h = Int(wh[1]) ?? 0
-                    }
-                } else if p.hasPrefix("hz:") {
-                    m.hz = Int(p.dropFirst(3)) ?? 0
-                } else if p.hasPrefix("color_depth:") {
-                    m.depth = Int(p.dropFirst(12)) ?? 8
-                } else if p.hasPrefix("scaling:") {
-                    m.scaling = String(p.dropFirst(8))
+    private func refreshDetails(reprobe: Bool) {
+        detailsTask?.cancel()
+        let expected = generation
+        let devices = displays.filter { $0.enabled && !$0.isBuiltin }
+        detailsTask = Task { [weak self] in
+            guard let self else { return }
+            for device in devices {
+                guard !Task.isCancelled, self.generation == expected else { return }
+                if reprobe || self.state(device.id).dimming == .unknown { await self.probe(device, generation: expected) }
+                if self.state(device.id).dimming == .software {
+                    self.applySoftwareDim(device.id, self.state(device.id).brightness)
                 }
             }
-            modes.append(m)
-            if line.contains("<-- current mode") { current = m.num }
-        }
-        externalModes = modes
-        currentMode = current
-    }
-
-    func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool) -> Bool {
-        let ok = PrivateAPI.setDisplayEnabled(id: id, enabled: enabled)
-        scheduleHandleChange()
-        return ok
-    }
-
-    func toggleDisplay(_ d: DisplayInfo) {
-        if d.enabled {
-            let othersActive = displays.contains { $0.enabled && $0.id != d.id }
-            guard othersActive else {
-                lastError = "至少需要保留一个显示器"
-                return
+            guard !Task.isCancelled, self.generation == expected else { return }
+            guard let snapshot = await self.readSnapshot(), !Task.isCancelled, self.generation == expected else { return }
+            for device in devices {
+                let modes = snapshot.modes[device.uuid] ?? []
+                self.controls[device.id]?.modes = modes
+                self.controls[device.id]?.currentMode = modes.first(where: \.isCurrent)?.id ?? -1
             }
-            _ = setEnabled(d.id, false)
+            if !self.isApplying && Date() >= self.suppressCaptureUntil {
+                self.saveLayout(snapshot)
+            } else {
+                self.scheduleCapture()
+            }
+        }
+    }
+
+    private func scheduleCapture() {
+        captureTask?.cancel()
+        let expected = generation
+        let delay = max(1, suppressCaptureUntil.timeIntervalSinceNow + 0.3)
+        captureTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(Int(delay * 1000))) } catch { return }
+            guard let self, self.started, !self.isApplying, self.generation == expected,
+                  Date() >= self.suppressCaptureUntil else { return }
+            guard let snapshot = await self.readSnapshot(), !Task.isCancelled, self.generation == expected else { return }
+            self.saveLayout(snapshot)
+        }
+    }
+
+    private func probe(_ display: DisplayInfo, generation expected: Int) async {
+        let uuid = display.uuid
+        guard !uuid.isEmpty else { return }
+        var luminance = await Subprocess.run("m1ddc", ["display", uuid, "get", "luminance"], timeout: 2)
+        guard !Task.isCancelled, generation == expected else { return }
+        if !luminance.succeeded || Double(luminance.output) == nil {
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            luminance = await Subprocess.run("m1ddc", ["display", uuid, "get", "luminance"], timeout: 2)
+        }
+        guard !Task.isCancelled, generation == expected else { return }
+        if luminance.succeeded, let value = Double(luminance.output), value.isFinite, value >= 0 {
+            let maximum = await Subprocess.run("m1ddc", ["display", uuid, "max", "luminance"], timeout: 2)
+            guard !Task.isCancelled, generation == expected else { return }
+            let maxValue = maximum.succeeded ? Double(maximum.output) ?? 100 : 100
+            controls[display.id]?.maximumBrightness = maxValue.isFinite && maxValue > 0 ? maxValue : 100
+            // A concurrent slider write wins over an older probe result.
+            if brightnessTasks[display.id] == nil {
+                controls[display.id]?.brightness = min(100, max(0, value / state(display.id).maximumBrightness * 100))
+            }
+            controls[display.id]?.dimming = .hardware
+            restoreGamma(display.id)
         } else {
-            _ = setEnabled(d.id, true)
+            controls[display.id]?.dimming = .software
         }
+        let volume = await Subprocess.run("m1ddc", ["display", uuid, "get", "volume"], timeout: 2)
+        guard !Task.isCancelled, generation == expected else { return }
+        if volume.succeeded, let value = Double(volume.output), value.isFinite, value >= 0 {
+            let maximum = await Subprocess.run("m1ddc", ["display", uuid, "max", "volume"], timeout: 2)
+            guard !Task.isCancelled, generation == expected else { return }
+            let maxValue = maximum.succeeded ? Double(maximum.output) ?? 100 : 100
+            controls[display.id]?.maximumVolume = maxValue.isFinite && maxValue > 0 ? maxValue : 100
+            controls[display.id]?.hasVolume = true
+            if volumeTasks[display.id] == nil { controls[display.id]?.volume = min(100, value / state(display.id).maximumVolume * 100) }
+        } else { controls[display.id]?.hasVolume = false }
+        let input = await Subprocess.run("m1ddc", ["display", uuid, "get", "input"], timeout: 2)
+        guard !Task.isCancelled, generation == expected else { return }
+        controls[display.id]?.input = input.succeeded ? Int(input.output) ?? 0 : 0
+        controls[display.id]?.hasInput = state(display.id).input > 0
     }
 
-    func wakeAll() {
-        for d in displays where !d.enabled {
-            _ = setEnabled(d.id, true)
-        }
-        if !builtinOnline {
-            for id: CGDirectDisplayID in [1, 2, 3, 4] {
-                _ = PrivateAPI.setDisplayEnabled(id: id, enabled: true)
-            }
-        }
-        scheduleHandleChange()
-    }
-
-    func setBuiltinBrightness(_ v: Double) {
-        guard let b = builtinID else { return }
-        if PrivateAPI.setBrightness(b, v / 100) {
-            builtinBrightness = v
-        }
-    }
-
-    func setExternalBrightness(_ v: Double) {
-        externalBrightness = v
-        if dimMode == "soft" {
-            if let id = external?.id { applySoftwareDim(id, v) }
+    func setBrightness(_ id: CGDirectDisplayID, _ value: Double) {
+        guard value.isFinite, let display = displays.first(where: { $0.id == id && $0.enabled }) else { return }
+        let value = min(100, max(0, value))
+        if display.isBuiltin {
+            if PrivateAPI.setBrightness(id, value / 100) { controls[id]?.brightness = value }
+            else { lastError = "无法设置内建屏亮度。" }
             return
         }
-        guard let u = externalUUID else { return }
-        let out = Subprocess.m1ddc(["display", u, "set", "luminance", "\(Int(v))"])
-        if out == nil || (out ?? "").contains("DDC communication failure") {
-            dimMode = "soft"
-            if let id = external?.id { applySoftwareDim(id, v) }
-        }
-    }
-
-    func applySoftwareDim(_ id: CGDirectDisplayID, _ v: Double) {
-        let g = Float(max(0.01, min(1, v / 100)))
-        _ = CGSetDisplayTransferByFormula(id, 0, g, 1, 0, g, 1, 0, g, 1)
-    }
-
-    func setExternalVolume(_ v: Double) {
-        guard let u = externalUUID else { return }
-        _ = Subprocess.m1ddc(["display", u, "set", "volume", "\(Int(v))"])
-        externalVolume = v
-    }
-
-    func setExternalInput(_ n: Int) {
-        guard let u = externalUUID else { return }
-        _ = Subprocess.m1ddc(["display", u, "set", "input", "\(n)"])
-        externalInput = n
-        scheduleHandleChange()
-    }
-
-    func layoutRecords() -> [LayoutRecord] {
-        let out = Subprocess.displayplacer(["list"]) ?? ""
-        var recs: [LayoutRecord] = []
-        var cur: LayoutRecord?
-        for raw in out.components(separatedBy: "\n") {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("Persistent screen id:") {
-                if let c = cur { recs.append(c) }
-                cur = LayoutRecord()
-                cur?.uuid = String(line.split(separator: " ").last ?? "")
-            } else if var c = cur {
-                if line.hasPrefix("Resolution:") {
-                    let wh = line.components(separatedBy: " ")[1].split(separator: "x")
-                    if wh.count == 2 {
-                        c.w = Int(wh[0]) ?? 0
-                        c.h = Int(wh[1]) ?? 0
+        guard state(id).dimming != .unknown else { return }
+        controls[id]?.brightness = value
+        UserDefaults.standard.set(value, forKey: "brightness.\(display.uuid)")
+        guard brightnessTasks[id] == nil else { return }
+        // One worker per display drains the latest value at a bounded rate. Continuous
+        // key repeat must not postpone every write until the user releases the key.
+        brightnessTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.brightnessTasks[id] = nil }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(70)) } catch { return }
+                guard self.displays.contains(where: { $0.id == id && $0.uuid == display.uuid && $0.enabled }) else { return }
+                let target = self.state(id).brightness
+                if self.state(id).dimming == .software {
+                    self.applySoftwareDim(id, target)
+                } else {
+                    let raw = Int((target / 100 * self.state(id).maximumBrightness).rounded())
+                    let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "luminance", "\(raw)"], timeout: 2)
+                    guard !Task.isCancelled, self.displays.contains(where: { $0.id == id && $0.uuid == display.uuid && $0.enabled }) else { return }
+                    if !result.succeeded || result.output.localizedCaseInsensitiveContains("DDC communication failure") {
+                        self.lastError = "\(display.name) 的硬件亮度写入失败，请点击刷新重试检测。"
+                        return
                     }
-                } else if line.hasPrefix("Hertz:") {
-                    c.hz = Int(line.components(separatedBy: " ")[1]) ?? 0
-                } else if line.hasPrefix("Color Depth:") {
-                    c.depth = Int(line.components(separatedBy: " ")[2]) ?? 8
-                } else if line.hasPrefix("Scaling:") {
-                    c.scaling = line.components(separatedBy: " ")[1]
-                } else if line.hasPrefix("Origin:") {
-                    let o = line.components(separatedBy: " ")[1]
-                        .replacingOccurrences(of: "(", with: "")
-                        .replacingOccurrences(of: ")", with: "")
-                        .split(separator: ",")
-                    if o.count == 2 {
-                        c.x = Int(o[0]) ?? 0
-                        c.y = Int(o[1]) ?? 0
-                    }
-                } else if line.hasPrefix("Enabled:") {
-                    recs.append(c)
-                    cur = nil
                 }
-                if cur != nil { cur = c }
+                if self.state(id).brightness == target { return }
             }
         }
-        return recs
     }
 
-    func emitConfig(_ recs: [LayoutRecord]) -> String {
-        recs.map {
-            "\"id:\($0.uuid) res:\($0.w)x\($0.h) hz:\($0.hz) color_depth:\($0.depth) enabled:true scaling:\($0.scaling) origin:(\($0.x),\($0.y)) degree:0\""
-        }.joined(separator: " ")
+    func setVolume(_ display: DisplayInfo, _ value: Double) {
+        guard value.isFinite, state(display.id).hasVolume else { return }
+        let value = min(100, max(0, value))
+        controls[display.id]?.volume = value
+        guard volumeTasks[display.id] == nil else { return }
+        volumeTasks[display.id] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.volumeTasks[display.id] = nil }
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                guard self.displays.contains(where: { $0.id == display.id && $0.uuid == display.uuid && $0.enabled }) else { return }
+                let target = self.state(display.id).volume
+                let raw = Int((target / 100 * self.state(display.id).maximumVolume).rounded())
+                let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "volume", "\(raw)"], timeout: 2)
+                guard !Task.isCancelled else { return }
+                if !result.succeeded { self.lastError = "显示器音量设置失败。"; return }
+                if self.state(display.id).volume == target { return }
+            }
+        }
+    }
+
+    func setInput(_ display: DisplayInfo, _ value: Int) async {
+        guard !isApplying, state(display.id).hasInput else { return }
+        isApplying = true
+        defer { isApplying = false }
+        let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "input", "\(value)"], timeout: 2)
+        if result.succeeded { controls[display.id]?.input = value; scheduleRefresh() }
+        else { lastError = "输入源切换失败，请检查显示器是否支持该输入源。" }
+    }
+
+    private func applySoftwareDim(_ id: CGDirectDisplayID, _ value: Double) {
+        if originalGamma[id] == nil {
+            let capacity = CGDisplayGammaTableCapacity(id)
+            guard capacity > 0 else { lastError = "当前显示器不支持软件调光。"; return }
+            var red = [CGGammaValue](repeating: 0, count: Int(capacity))
+            var green = red; var blue = red; var count: UInt32 = 0
+            guard CGGetDisplayTransferByTable(id, capacity, &red, &green, &blue, &count) == .success, count > 0 else {
+                lastError = "无法读取显示器色彩曲线，已停止软件调光。"; return
+            }
+            originalGamma[id] = Gamma(red: Array(red.prefix(Int(count))), green: Array(green.prefix(Int(count))), blue: Array(blue.prefix(Int(count))))
+        }
+        guard let gamma = originalGamma[id] else { return }
+        let factor = Float(max(0.05, min(1, value / 100)))
+        let red = gamma.red.map { $0 * factor }; let green = gamma.green.map { $0 * factor }; let blue = gamma.blue.map { $0 * factor }
+        if CGSetDisplayTransferByTable(id, UInt32(red.count), red, green, blue) != .success {
+            lastError = "软件调光失败，当前显示模式可能不支持此操作。"
+        }
+    }
+    private func restoreGamma(_ id: CGDirectDisplayID) {
+        guard let gamma = originalGamma.removeValue(forKey: id) else { return }
+        _ = CGSetDisplayTransferByTable(id, UInt32(gamma.red.count), gamma.red, gamma.green, gamma.blue)
     }
 
     @discardableResult
-    func applyRecords(_ recs: [LayoutRecord]) -> Bool {
-        guard !recs.isEmpty else { return false }
-        return Subprocess.displayplacer(Subprocess.tokenize(emitConfig(recs))) != nil
+    func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool) -> Bool {
+        scanDisplays()
+        if !enabled && !displays.contains(where: { $0.id != id && $0.enabled }) {
+            lastError = "至少需要保留一块可用的实体显示器。"; return false
+        }
+        guard PrivateAPI.setDisplayEnabled(id: id, enabled: enabled) else {
+            lastError = "显示器开关操作失败，当前 macOS 可能不支持此接口。"; return false
+        }
+        scheduleRefresh()
+        return true
+    }
+    func toggleDisplay(_ display: DisplayInfo) {
+        guard !isApplying else { return }
+        _ = setEnabled(display.id, !display.enabled)
+    }
+    func wakeAll() {
+        // Explicit recovery also pauses the automation that would immediately switch it off again.
+        autoWorkflow = false
+        UserDefaults.standard.set(false, forKey: "autoWorkflow")
+        workflowTask?.cancel()
+        scanDisplays()
+        var ids = Set(displays.map(\.id))
+        if let knownBuiltinID { ids.insert(knownBuiltinID) }
+        for id in ids { _ = setEnabled(id, true); restoreGamma(id) }
+        if let id = knownBuiltinID { _ = PrivateAPI.setBrightness(id, max(20, preWorkflowBrightness ?? 70) / 100) }
+        changedBuiltinForWorkflow = false
+        preWorkflowBrightness = nil
+        scheduleRefresh(reprobe: true)
     }
 
-    func restoreLayout(applyBrightness: Bool = true) {
-        guard let cfg = UserDefaults.standard.string(forKey: "savedLayout") else {
-            lastError = "还没有保存过布局"
+    func setAutoWorkflow(_ enabled: Bool) {
+        autoWorkflow = enabled
+        UserDefaults.standard.set(enabled, forKey: "autoWorkflow")
+        workflowTask?.cancel()
+        if enabled { scheduleWorkflow() }
+        else if changedBuiltinForWorkflow, let id = knownBuiltinID {
+            if setEnabled(id, true) {
+                if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
+                changedBuiltinForWorkflow = false
+                preWorkflowBrightness = nil
+            }
+        }
+    }
+    private func scheduleWorkflow() {
+        workflowTask?.cancel()
+        suppressCaptureUntil = Date().addingTimeInterval(5)
+        workflowTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            guard let self, self.autoWorkflow, !self.isApplying else { return }
+            self.scanDisplays()
+            guard self.externalOnline else { return }
+            if let builtin = self.builtin, builtin.enabled {
+                self.preWorkflowBrightness = self.state(builtin.id).brightness
+            }
+            await self.restoreLayout(silent: true)
+            guard !Task.isCancelled, self.autoWorkflow else { return }
+            self.scanDisplays()
+            guard self.externalOnline, let builtin = self.builtin else { return }
+            if builtin.enabled {
+                self.changedBuiltinForWorkflow = self.setEnabled(builtin.id, false)
+            } else if self.preWorkflowBrightness != nil {
+                self.changedBuiltinForWorkflow = true
+            }
+        }
+    }
+
+    private func readSnapshot() async -> DisplaySnapshot? {
+        let result = await Subprocess.run("displayplacer", ["list"])
+        return result.succeeded ? DisplaySnapshot(result.output) : nil
+    }
+    private func saveLayout(_ snapshot: DisplaySnapshot) {
+        guard externalOnline, DisplaySnapshot.canRestore(snapshot.arguments, connectedIDs: connectedIDs) else { return }
+        UserDefaults.standard.set(snapshot.arguments, forKey: layoutKey)
+    }
+    private func apply(_ arguments: [String], expected: Int) async -> Bool {
+        guard generation == expected, DisplaySnapshot.canRestore(arguments, connectedIDs: connectedIDs) else {
+            lastError = "显示器连接已变化，请刷新后重试。"; return false
+        }
+        suppressCaptureUntil = Date().addingTimeInterval(2)
+        let result = await Subprocess.run("displayplacer", arguments)
+        if !result.succeeded { lastError = result.timedOut ? "显示设置操作超时。" : "显示设置未成功应用，请尝试其他模式。" }
+        scheduleRefresh()
+        return result.succeeded
+    }
+    func restoreLayout(silent: Bool = false) async {
+        guard !isApplying else { return }
+        scanDisplays()
+        guard let arguments = UserDefaults.standard.stringArray(forKey: layoutKey),
+              DisplaySnapshot.canRestore(arguments, connectedIDs: connectedIDs) else {
+            if !silent { lastError = "这组显示器还没有可恢复的布局。" }
             return
         }
-        _ = Subprocess.displayplacer(Subprocess.tokenize(cfg))
-        if applyBrightness, let v = UserDefaults.standard.object(forKey: "savedBrightness") as? Double {
-            setBuiltinBrightness(v)
+        isApplying = true
+        defer { isApplying = false }
+        _ = await apply(arguments, expected: generation)
+    }
+    func setMain(_ display: DisplayInfo) async {
+        guard !isApplying, display.enabled, !mirrored else { return }
+        isApplying = true
+        defer { isApplying = false }
+        let expected = generation
+        guard let snapshot = await readSnapshot(), let records = DisplaySnapshot.movingMain(to: display.uuid, in: snapshot.layouts) else { return }
+        _ = await apply(records.map(\.argument), expected: expected)
+    }
+    func setMode(_ display: DisplayInfo, _ mode: DisplayMode) async {
+        guard !isApplying, !mirrored else { return }
+        isApplying = true
+        defer { isApplying = false }
+        let expected = generation
+        guard let snapshot = await readSnapshot(), let record = snapshot.layouts.first(where: { $0.uuid == display.uuid }),
+              snapshot.modes[display.uuid]?.contains(mode) == true else { lastError = "显示模式列表已变化，请刷新后重试。"; return }
+        let args = snapshot.layouts.map { item in
+            item.uuid == display.uuid
+                ? "id:\(item.uuid) mode:\(mode.id) origin:(\(record.x),\(record.y)) degree:\(record.rotation)"
+                : item.argument
         }
+        // Mode selection implicitly enables the target; make that explicit for validation.
+        let explicit = args.map { $0.contains(" mode:") ? $0 + " enabled:true" : $0 }
+        _ = await apply(explicit, expected: expected)
+    }
+    func setMirror(_ enabled: Bool) async {
+        guard !isApplying, displays.filter(\.enabled).count >= 2 else { return }
+        isApplying = true
+        defer { isApplying = false }
+        let expected = generation
+        let key = "preMirror." + layoutKey
+        if enabled {
+            guard let snapshot = await readSnapshot(), !snapshot.arguments.isEmpty else { return }
+            UserDefaults.standard.set(snapshot.arguments, forKey: key)
+            let ids = displays.filter(\.enabled).sorted { $0.id == mainID && $1.id != mainID }.map(\.uuid).joined(separator: "+")
+            var args = ["id:\(ids) enabled:true origin:(0,0)"]
+            args += snapshot.layouts.filter { !$0.enabled }.map(\.argument)
+            _ = await apply(args, expected: expected)
+        } else if let args = UserDefaults.standard.stringArray(forKey: key) {
+            _ = await apply(args, expected: expected)
+        } else { lastError = "没有镜像前的布局，请在系统显示器设置中改为扩展显示。" }
+    }
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            loginStatus = SMAppService.mainApp.status
+            if loginStatus == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+        } catch { lastError = "登录启动设置失败：\(error.localizedDescription)"; loginStatus = SMAppService.mainApp.status }
     }
 
-    func setMirror(_ on: Bool) {
-        if on {
-            let recs = layoutRecords()
-            guard let main = recs.first(where: { $0.isMain }) ?? recs.first else { return }
-            UserDefaults.standard.set(emitConfig(recs), forKey: "preMirrorConfig")
-            let ids = recs.map(\.uuid).joined(separator: "+")
-            let cfg = "id:\(ids) res:\(main.w)x\(main.h) hz:\(main.hz) color_depth:\(main.depth) enabled:true scaling:\(main.scaling) origin:(0,0) degree:0"
-            _ = Subprocess.displayplacer(Subprocess.tokenize(cfg))
-            mirrored = true
-        } else {
-            if let cfg = UserDefaults.standard.string(forKey: "preMirrorConfig") {
-                _ = Subprocess.displayplacer(Subprocess.tokenize(cfg))
-            }
-            mirrored = false
-        }
-        scheduleHandleChange()
+    private func handleBrightnessKey(delta: Int, fine: Bool) -> Bool {
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
+              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
+        let id = number.uint32Value
+        // Native internal display handling retains Apple's HUD and automatic brightness behavior.
+        guard let display = displays.first(where: { $0.id == id && $0.enabled && !$0.isBuiltin }),
+              state(id).dimming != .unknown else { return false }
+        let value = min(100, max(0, state(id).brightness + Double(delta) * (fine ? 1.5625 : 6.25)))
+        setBrightness(display.id, value)
+        showHUD(Int(value.rounded()), screen: screen)
+        return true
     }
-
-    func setMain(_ target: DisplayInfo) {
-        var recs = layoutRecords()
-        guard let i = recs.firstIndex(where: { $0.uuid == target.uuid }) else { return }
-        let oldMain = recs.firstIndex(where: { $0.isMain })
-        let t = recs[i]
-        recs[i].x = 0
-        recs[i].y = 0
-        if let o = oldMain, o != i {
-            recs[o].x = t.w
-            recs[o].y = 0
+    private func showHUD(_ value: Int, screen: NSScreen) {
+        let size = NSSize(width: 170, height: 58)
+        if hud == nil {
+            let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.level = .statusBar; panel.isOpaque = false; panel.backgroundColor = .clear
+            panel.hasShadow = false; panel.ignoresMouseEvents = true; panel.hidesOnDeactivate = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.contentView = NSHostingView(rootView: HUDView(value: value))
+            hud = panel
         }
-        _ = applyRecords(recs)
-        scheduleHandleChange()
-    }
-
-    func setExternalMode(_ m: ModeInfo) {
-        guard let u = externalUUID else { return }
-        var recs = layoutRecords()
-        guard let i = recs.firstIndex(where: { $0.uuid == u }) else { return }
-        recs[i].w = m.w
-        recs[i].h = m.h
-        recs[i].hz = m.hz
-        recs[i].depth = m.depth
-        recs[i].scaling = m.scaling
-        _ = applyRecords(recs)
-        currentMode = m.num
-        scheduleHandleChange()
+        (hud?.contentView as? NSHostingView<HUDView>)?.rootView = HUDView(value: value)
+        hud?.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.minY + screen.frame.height * 0.2,
+                            width: size.width, height: size.height), display: true)
+        hud?.orderFrontRegardless()
+        hudHideTask?.cancel()
+        hudHideTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            self?.hud?.orderOut(nil)
+        }
     }
 }
