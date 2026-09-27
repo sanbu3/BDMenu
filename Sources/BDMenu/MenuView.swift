@@ -77,8 +77,10 @@ struct MenuView: View {
             .toggleStyle(.switch).controlSize(.small)
             .padding(14)
         }
-        .frame(width: 410)
-        .frame(maxHeight: 680)
+        // MenuBarExtra windows don't offer an intrinsic height to a root
+        // ScrollView on every macOS release. An explicit viewport prevents the
+        // panel from collapsing to an empty 10-point window.
+        .frame(width: 410, height: 600)
         .onAppear { dm.panelOpened() }
     }
 
