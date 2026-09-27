@@ -21,4 +21,6 @@ jobs:
       - name: Core regression tests and app compilation
         run: swift test
       - name: Clean ARM64 app bundle and signature validation
-        run: ./build.sh --adhoc
+        run: |
+          xattr -w com.apple.ResourceFork fixture bin/m1ddc
+          ./build.sh --adhoc

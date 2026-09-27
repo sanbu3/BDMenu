@@ -50,6 +50,9 @@ cp "$BIN_DIR/BDMenu" "$APP/Contents/MacOS/BDMenu"
 cp bin/m1ddc bin/displayplacer "$APP/Contents/Resources/"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Info.plist "$APP/Contents/Info.plist"
+# Finder metadata/resource forks inherited from local files are rejected by
+# codesign. Clean only the new staging bundle before any signatures are made.
+xattr -cr "$APP"
 # Sign nested executables explicitly, then seal the bundle. Never use --deep to sign.
 for HELPER in m1ddc displayplacer; do
   codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/$HELPER"
