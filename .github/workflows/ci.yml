@@ -24,3 +24,5 @@ jobs:
         run: |
           xattr -w com.apple.ResourceFork fixture bin/m1ddc
           ./build.sh --adhoc
+          test -d "$HOME/Library/Application Support/BDMenu/Build/BDMenu.app"
+          codesign --verify --deep --strict "$HOME/Library/Application Support/BDMenu/Build/BDMenu.app"

@@ -9,6 +9,7 @@ GitHub Actions 在 macOS 14 / Apple Silicon 上运行：
 - 子进程测试：非零退出码、标准输出/错误、大量输出、超时强制结束、缺失工具、参数不经 Shell 执行。
 - `./build.sh --adhoc`：从干净目录生成 ARM64 `.app`，逐个签名内置工具，再签名应用，执行 `codesign --verify --deep --strict`。
 - 在内置工具上模拟下载/拷贝遗留的 resource fork，验证构建脚本只清理新生成的暂存应用包中的扩展属性，然后成功签名。
+- 暂存与产物放在用户本地的 `~/Library/Application Support/BDMenu/Build`，避免放在可能由 iCloud 同步的桌面目录；安装脚本使用相同产物位置。
 
 CI 使用临时签名，只验证打包流程；不代表验证了你的开发证书、辅助功能授权或真实显示器。
 

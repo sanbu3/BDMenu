@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-APP="$PWD/build/BDMenu.app"
+APP="${BDMENU_OUTPUT_DIR:-$HOME/Library/Application Support/BDMenu/Build}/BDMenu.app"
 DEST="${BDMENU_INSTALL_DIR:-/Applications}"
 [ -d "$APP" ] || { echo "Run ./build.sh first." >&2; exit 1; }
 [ -d "$DEST" ] && [ -w "$DEST" ] || { echo "No write access to $DEST; set BDMENU_INSTALL_DIR to a writable Applications directory." >&2; exit 1; }

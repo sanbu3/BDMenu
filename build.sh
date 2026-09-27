@@ -42,7 +42,11 @@ mkdir -p build
 ARCH="${BDMENU_ARCH:-arm64}"
 swift build -c release --arch "$ARCH"
 BIN_DIR=$(swift build -c release --arch "$ARCH" --show-bin-path)
-STAGE=$(mktemp -d "$PWD/build/stage.XXXXXX")
+# Desktop and Documents may be managed by a sync provider that recreates
+# FinderInfo after xattr -cr. Keep signed bundles in a local app-support folder.
+OUTPUT_DIR="${BDMENU_OUTPUT_DIR:-$HOME/Library/Application Support/BDMenu/Build}"
+mkdir -p "$OUTPUT_DIR"
+STAGE=$(mktemp -d "$OUTPUT_DIR/stage.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 APP="$STAGE/BDMenu.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -53,6 +57,10 @@ cp Info.plist "$APP/Contents/Info.plist"
 # Finder metadata/resource forks inherited from local files are rejected by
 # codesign. Clean only the new staging bundle before any signatures are made.
 xattr -cr "$APP"
+if xattr -p com.apple.FinderInfo "$APP" >/dev/null 2>&1; then
+  echo "FinderInfo persists on the staging app at $APP; use a local BDMENU_OUTPUT_DIR outside synced folders." >&2
+  exit 1
+fi
 # Sign nested executables explicitly, then seal the bundle. Never use --deep to sign.
 for HELPER in m1ddc displayplacer; do
   codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/$HELPER"
@@ -60,10 +68,10 @@ done
 codesign --force --sign "$IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 # Keep the previous app until the staged build is signed and verified.
-rm -rf build/BDMenu.previous.app
-if [ -d build/BDMenu.app ]; then mv build/BDMenu.app build/BDMenu.previous.app; fi
-if ! mv "$APP" build/BDMenu.app; then
-  if [ -d build/BDMenu.previous.app ]; then mv build/BDMenu.previous.app build/BDMenu.app; fi
+rm -rf "$OUTPUT_DIR/BDMenu.previous.app"
+if [ -d "$OUTPUT_DIR/BDMenu.app" ]; then mv "$OUTPUT_DIR/BDMenu.app" "$OUTPUT_DIR/BDMenu.previous.app"; fi
+if ! mv "$APP" "$OUTPUT_DIR/BDMenu.app"; then
+  if [ -d "$OUTPUT_DIR/BDMenu.previous.app" ]; then mv "$OUTPUT_DIR/BDMenu.previous.app" "$OUTPUT_DIR/BDMenu.app"; fi
   exit 1
 fi
 if ! $ADHOC; then
@@ -71,6 +79,6 @@ if ! $ADHOC; then
   printf '%s\n' "$IDENTITY" > .signing-identity
   chmod 600 .signing-identity
 fi
-codesign -d -r- build/BDMenu.app 2>&1
-echo "Built: $PWD/build/BDMenu.app"
+codesign -d -r- "$OUTPUT_DIR/BDMenu.app" 2>&1
+echo "Built: $OUTPUT_DIR/BDMenu.app"
 echo "Install/update at a stable path with ./install.sh"

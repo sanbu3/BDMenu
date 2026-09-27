@@ -29,7 +29,7 @@ Mac 菜单栏显示器管理器 —— BetterDisplay 的免费开源替代(日�
 ## 安装与构建
 
 ```bash
-./build.sh       # 使用固定签名身份，生成 build/BDMenu.app
+./build.sh       # 使用固定签名身份，生成 ~/Library/Application Support/BDMenu/Build/BDMenu.app
 ./install.sh     # 安装/更新到 /Applications/BDMenu.app，并启动
 ```
 
@@ -56,6 +56,7 @@ CODE_SIGN_IDENTITY='你的证书 SHA-1' ./build.sh
 - 按连接的显示器 UUID 集合保存/恢复布局，拒绝向不同显示器组合套用旧配置。
 - 软件调光基于原有色彩曲线，正常退出还原；一次 DDC 写入失败不会立即叠加软件调光。
 - 构建完成并验证签名后才替换旧产物；安装在固定路径，检测签名身份变化。
+- 暂存及输出应用包存放在本机的 Application Support 目录，避免桌面同步服务在签名时反复添加 Finder 信息；可用 `BDMENU_OUTPUT_DIR` 自定义路径。
 - 附带 CLI 修复坐标分隔符丢失、主屏位置/旋转丢失，移除配置恢复中的 `eval`，支持包含空格的工具路径。
 
 验证方式、一次性授权迁移和实机验收项目见 [docs/VALIDATION.md](docs/VALIDATION.md)。
