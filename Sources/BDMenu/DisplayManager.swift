@@ -81,6 +81,11 @@ final class DisplayManager {
     private var connectedIDs: Set<String> { Set(displays.map(\.uuid).filter { !$0.isEmpty }) }
     private var layoutKey: String { "layout.v2." + connectedIDs.sorted().joined(separator: "+") }
     func state(_ id: CGDirectDisplayID) -> Controls { controls[id] ?? Controls() }
+    private func mutateState(_ id: CGDirectDisplayID, _ update: (inout Controls) -> Void) {
+        guard var value = controls[id] else { return }
+        update(&value)
+        controls[id] = value
+    }
 
     func start() {
         guard !started else { return }
@@ -207,7 +212,9 @@ final class DisplayManager {
                 value.brightness = saved.isFinite ? min(100, max(0, saved)) : 100
                 controls[id] = value
             }
-            if isBuiltin, let value = PrivateAPI.getBrightness(id) { controls[id]?.brightness = value * 100 }
+            if isBuiltin, let value = PrivateAPI.getBrightness(id) {
+                mutateState(id) { $0.brightness = value * 100 }
+            }
         }
         if result != displays { generation += 1 }
         let retained = Set(result.map(\.id))
@@ -256,8 +263,10 @@ final class DisplayManager {
             guard let snapshot = await self.readSnapshot(), !Task.isCancelled, self.generation == expected else { return }
             for device in devices {
                 let modes = snapshot.modes[device.uuid] ?? []
-                self.controls[device.id]?.modes = modes
-                self.controls[device.id]?.currentMode = modes.first(where: \.isCurrent)?.id ?? -1
+                self.mutateState(device.id) {
+                    $0.modes = modes
+                    $0.currentMode = modes.first(where: \.isCurrent)?.id ?? -1
+                }
             }
             if !self.isApplying && Date() >= self.suppressCaptureUntil {
                 self.saveLayout(snapshot)
@@ -294,15 +303,18 @@ final class DisplayManager {
             let maximum = await Subprocess.run("m1ddc", ["display", uuid, "max", "luminance"], timeout: 2)
             guard !Task.isCancelled, generation == expected else { return }
             let maxValue = maximum.succeeded ? Double(maximum.output) ?? 100 : 100
-            controls[display.id]?.maximumBrightness = maxValue.isFinite && maxValue > 0 ? maxValue : 100
+            let maximumBrightness = maxValue.isFinite && maxValue > 0 ? maxValue : 100
             // A concurrent slider write wins over an older probe result.
-            if brightnessTasks[display.id] == nil {
-                controls[display.id]?.brightness = min(100, max(0, value / state(display.id).maximumBrightness * 100))
+            mutateState(display.id) {
+                $0.maximumBrightness = maximumBrightness
+                if brightnessTasks[display.id] == nil {
+                    $0.brightness = min(100, max(0, value / maximumBrightness * 100))
+                }
+                $0.dimming = .hardware
             }
-            controls[display.id]?.dimming = .hardware
             restoreGamma(display.id)
         } else {
-            controls[display.id]?.dimming = .software
+            mutateState(display.id) { $0.dimming = .software }
         }
         let volume = await Subprocess.run("m1ddc", ["display", uuid, "get", "volume"], timeout: 2)
         guard !Task.isCancelled, generation == expected else { return }
@@ -310,26 +322,36 @@ final class DisplayManager {
             let maximum = await Subprocess.run("m1ddc", ["display", uuid, "max", "volume"], timeout: 2)
             guard !Task.isCancelled, generation == expected else { return }
             let maxValue = maximum.succeeded ? Double(maximum.output) ?? 100 : 100
-            controls[display.id]?.maximumVolume = maxValue.isFinite && maxValue > 0 ? maxValue : 100
-            controls[display.id]?.hasVolume = true
-            if volumeTasks[display.id] == nil { controls[display.id]?.volume = min(100, value / state(display.id).maximumVolume * 100) }
-        } else { controls[display.id]?.hasVolume = false }
+            let maximumVolume = maxValue.isFinite && maxValue > 0 ? maxValue : 100
+            mutateState(display.id) {
+                $0.maximumVolume = maximumVolume
+                $0.hasVolume = true
+                if volumeTasks[display.id] == nil {
+                    $0.volume = min(100, value / maximumVolume * 100)
+                }
+            }
+        } else {
+            mutateState(display.id) { $0.hasVolume = false }
+        }
         let input = await Subprocess.run("m1ddc", ["display", uuid, "get", "input"], timeout: 2)
         guard !Task.isCancelled, generation == expected else { return }
-        controls[display.id]?.input = input.succeeded ? Int(input.output) ?? 0 : 0
-        controls[display.id]?.hasInput = state(display.id).input > 0
+        let inputValue = input.succeeded ? Int(input.output) ?? 0 : 0
+        mutateState(display.id) {
+            $0.input = inputValue
+            $0.hasInput = inputValue > 0
+        }
     }
 
     func setBrightness(_ id: CGDirectDisplayID, _ value: Double) {
         guard value.isFinite, let display = displays.first(where: { $0.id == id && $0.enabled }) else { return }
         let value = min(100, max(0, value))
         if display.isBuiltin {
-            if PrivateAPI.setBrightness(id, value / 100) { controls[id]?.brightness = value }
+            if PrivateAPI.setBrightness(id, value / 100) { mutateState(id) { $0.brightness = value } }
             else { lastError = "无法设置内建屏亮度。" }
             return
         }
         guard state(id).dimming != .unknown else { return }
-        controls[id]?.brightness = value
+        mutateState(id) { $0.brightness = value }
         UserDefaults.standard.set(value, forKey: "brightness.\(display.uuid)")
         guard brightnessTasks[id] == nil else { return }
         // One worker per display drains the latest value at a bounded rate. Continuous
@@ -360,7 +382,7 @@ final class DisplayManager {
     func setVolume(_ display: DisplayInfo, _ value: Double) {
         guard value.isFinite, state(display.id).hasVolume else { return }
         let value = min(100, max(0, value))
-        controls[display.id]?.volume = value
+        mutateState(display.id) { $0.volume = value }
         guard volumeTasks[display.id] == nil else { return }
         volumeTasks[display.id] = Task { [weak self] in
             guard let self else { return }
@@ -383,7 +405,7 @@ final class DisplayManager {
         isApplying = true
         defer { isApplying = false }
         let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "input", "\(value)"], timeout: 2)
-        if result.succeeded { controls[display.id]?.input = value; scheduleRefresh() }
+        if result.succeeded { mutateState(display.id) { $0.input = value }; scheduleRefresh() }
         else { lastError = "输入源切换失败，请检查显示器是否支持该输入源。" }
     }
 
