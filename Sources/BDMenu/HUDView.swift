@@ -15,8 +15,7 @@ struct HUDView: View {
         .background(
             Capsule()
                 .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         )
-        .overlay(Capsule().strokeBorder(.white.opacity(0.15)))
+        .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 0.75))
     }
 }

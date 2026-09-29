@@ -47,12 +47,14 @@ final class DisplayManager {
     var lastError: String?
     var isApplying = false
     var autoWorkflow = UserDefaults.standard.bool(forKey: "autoWorkflow")
+    var syncKeyboardBacklight = UserDefaults.standard.object(forKey: "syncKeyboardBacklight") as? Bool ?? true
     var followPointerEnabled = UserDefaults.standard.bool(forKey: "followPointer")
     var keysTrusted = false
     var keysInstalled = false
     var loginStatus = SMAppService.mainApp.status
 
     @ObservationIgnored private let keys = BrightnessKeys()
+    @ObservationIgnored private let keyboardBacklight = KeyboardBacklightController()
     @ObservationIgnored private var started = false
     @ObservationIgnored private var changeTask: Task<Void, Never>?
     @ObservationIgnored private var detailsTask: Task<Void, Never>?
@@ -76,6 +78,7 @@ final class DisplayManager {
     let inputOptions: [(Int, String)] = [(15, "DP 1"), (16, "DP 2"), (17, "HDMI 1"), (18, "HDMI 2"), (27, "USB-C")]
     var builtin: DisplayInfo? { displays.first { $0.isBuiltin } }
     var externalOnline: Bool { displays.contains { !$0.isBuiltin && $0.enabled } }
+    var keyboardBacklightAvailable: Bool { keyboardBacklight != nil }
     var launchAtLogin: Bool { loginStatus == .enabled || loginStatus == .requiresApproval }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.2" }
     private var connectedIDs: Set<String> { Set(displays.map(\.uuid).filter { !$0.isEmpty }) }
@@ -117,10 +120,76 @@ final class DisplayManager {
         keys.uninstall()
         for id in Array(originalGamma.keys) { restoreGamma(id) }
         if changedBuiltinForWorkflow, let id = knownBuiltinID {
-            _ = PrivateAPI.setDisplayEnabled(id: id, enabled: true)
-            if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
+            if PrivateAPI.setDisplayEnabled(id: id, enabled: true) {
+                restoreKeyboardBacklight(reportFailure: false)
+                if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
+            }
         }
         hud?.orderOut(nil)
+    }
+
+    func setSyncKeyboardBacklight(_ enabled: Bool) {
+        syncKeyboardBacklight = enabled
+        UserDefaults.standard.set(enabled, forKey: "syncKeyboardBacklight")
+        scanDisplays()
+        if enabled {
+            synchronizeKeyboardBacklight()
+        } else {
+            restoreKeyboardBacklight()
+        }
+    }
+
+    private func storedKeyboardBacklightSnapshot() -> [UInt64: Float]? {
+        guard let stored = UserDefaults.standard.dictionary(forKey: "keyboardBacklight.savedBrightness") else {
+            return nil
+        }
+        var snapshot: [UInt64: Float] = [:]
+        for (key, rawValue) in stored {
+            guard let id = UInt64(key), let number = rawValue as? NSNumber else { continue }
+            let value = number.floatValue
+            if value.isFinite, value >= 0, value <= 1 {
+                snapshot[id] = value
+            }
+        }
+        return snapshot.isEmpty ? nil : snapshot
+    }
+
+    private func storeKeyboardBacklightSnapshot(_ snapshot: [UInt64: Float]) {
+        let stored = Dictionary(uniqueKeysWithValues: snapshot.map { (String($0.key), Double($0.value)) })
+        UserDefaults.standard.set(stored, forKey: "keyboardBacklight.savedBrightness")
+    }
+
+    private func dimKeyboardBacklight() {
+        guard syncKeyboardBacklight, let keyboardBacklight else { return }
+        if storedKeyboardBacklightSnapshot() == nil {
+            let snapshot = keyboardBacklight.snapshot()
+            guard !snapshot.isEmpty else {
+                lastError = "内置屏已关闭，但无法读取键盘背光亮度。"
+                return
+            }
+            storeKeyboardBacklightSnapshot(snapshot)
+        }
+        if !keyboardBacklight.setBrightness(0) {
+            lastError = "内置屏已关闭，但键盘背光同步失败。"
+        }
+    }
+
+    private func restoreKeyboardBacklight(reportFailure: Bool = true) {
+        guard let snapshot = storedKeyboardBacklightSnapshot() else { return }
+        guard let keyboardBacklight, keyboardBacklight.restore(snapshot) else {
+            if reportFailure { lastError = "键盘背光恢复失败。" }
+            return
+        }
+        UserDefaults.standard.removeObject(forKey: "keyboardBacklight.savedBrightness")
+    }
+
+    private func synchronizeKeyboardBacklight() {
+        guard keyboardBacklightAvailable else { return }
+        if syncKeyboardBacklight, externalOnline, builtin?.enabled == false {
+            dimKeyboardBacklight()
+        } else if !syncKeyboardBacklight || builtin?.enabled == true {
+            restoreKeyboardBacklight()
+        }
     }
 
     func setFollowPointer(_ enabled: Bool) {
@@ -162,6 +231,7 @@ final class DisplayManager {
         refreshPermission()
         loginStatus = SMAppService.mainApp.status
         scanDisplays()
+        synchronizeKeyboardBacklight()
         refreshDetails(reprobe: false)
     }
     func scheduleRefresh(reprobe: Bool = false) {
@@ -171,6 +241,7 @@ final class DisplayManager {
             guard let self, self.started else { return }
             let old = self.previousExternals
             self.scanDisplays()
+            self.synchronizeKeyboardBacklight()
             let now = Set(self.displays.filter { !$0.isBuiltin }.map(\.uuid))
             self.previousExternals = now
             self.recoverBuiltinIfNeeded()
@@ -234,12 +305,14 @@ final class DisplayManager {
         guard let id = builtin?.id ?? knownBuiltinID else { return }
         if builtin?.enabled != true {
             if PrivateAPI.setDisplayEnabled(id: id, enabled: true) {
+                restoreKeyboardBacklight()
                 if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
                 changedBuiltinForWorkflow = false
                 preWorkflowBrightness = nil
                 // The system reconfiguration callback schedules the follow-up. No perpetual polling loop.
             } else { lastError = "内建屏恢复失败，请尝试“全部点亮”或重新连接外置屏。" }
         } else if changedBuiltinForWorkflow {
+            restoreKeyboardBacklight()
             if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
             changedBuiltinForWorkflow = false
             preWorkflowBrightness = nil
@@ -435,11 +508,19 @@ final class DisplayManager {
     @discardableResult
     func setEnabled(_ id: CGDirectDisplayID, _ enabled: Bool) -> Bool {
         scanDisplays()
+        let isBuiltin = id == knownBuiltinID || displays.contains { $0.id == id && $0.isBuiltin }
         if !enabled && !displays.contains(where: { $0.id != id && $0.enabled }) {
             lastError = "至少需要保留一块可用的实体显示器。"; return false
         }
         guard PrivateAPI.setDisplayEnabled(id: id, enabled: enabled) else {
             lastError = "显示器开关操作失败，当前 macOS 可能不支持此接口。"; return false
+        }
+        if isBuiltin {
+            if enabled {
+                restoreKeyboardBacklight()
+            } else {
+                dimKeyboardBacklight()
+            }
         }
         scheduleRefresh()
         return true
