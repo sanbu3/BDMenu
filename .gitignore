@@ -2,3 +2,5 @@
 build/
 *.app
 .DS_Store
+.signing-identity
+.swiftpm/

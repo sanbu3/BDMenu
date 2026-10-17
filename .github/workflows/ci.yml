@@ -1,0 +1,28 @@
+name: macOS build and regression tests
+on:
+  push:
+    branches: [main, 'fix/**']
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Shell syntax
+        run: bash -n build.sh install.sh make_icon.sh cli/bds
+      - name: CLI regression tests
+        run: python3 Tests/test_cli.py
+      - name: Core regression tests and app compilation
+        run: swift test
+      - name: Clean ARM64 app bundle and signature validation
+        run: |
+          xattr -w com.apple.ResourceFork fixture bin/m1ddc
+          ./build.sh --adhoc
+          test -d "$HOME/Library/Application Support/BDMenu/Build/BDMenu.app"
+          codesign --verify --deep --strict "$HOME/Library/Application Support/BDMenu/Build/BDMenu.app"
