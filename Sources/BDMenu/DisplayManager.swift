@@ -24,11 +24,8 @@ final class DisplayManager {
     }
     struct Controls {
         var brightness: Double = 100
-        var volume: Double = 50
         var maximumBrightness: Double = 100
-        var maximumVolume: Double = 100
         var input = 0
-        var hasVolume = false
         var hasInput = false
         var dimming: Dimming = .unknown
         var modes: [DisplayMode] = []
@@ -49,6 +46,8 @@ final class DisplayManager {
     var autoWorkflow = UserDefaults.standard.bool(forKey: "autoWorkflow")
     var preferPasswordWhenBuiltinOff = UserDefaults.standard.object(forKey: "preferPasswordWhenBuiltinOff") as? Bool ?? true
     let passwordPreference = PasswordPreferenceController()
+    let dock = DockController()
+    let identification = DisplayIdentification()
     var syncKeyboardBacklight = UserDefaults.standard.object(forKey: "syncKeyboardBacklight") as? Bool ?? true
     var keyboardEnabled = UserDefaults.standard.object(forKey: "brightnessKeyboardEnabled") as? Bool ?? true
     var brightnessTarget = BrightnessTarget(rawValue: UserDefaults.standard.string(forKey: "brightnessTarget") ?? "") ?? .focusedWindow
@@ -71,7 +70,6 @@ final class DisplayManager {
     @ObservationIgnored private var workflowTask: Task<Void, Never>?
     @ObservationIgnored private var permissionTask: Task<Void, Never>?
     @ObservationIgnored private var brightnessTasks: [CGDirectDisplayID: Task<Void, Never>] = [:]
-    @ObservationIgnored private var volumeTasks: [CGDirectDisplayID: Task<Void, Never>] = [:]
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var workspaceObservers: [NSObjectProtocol] = []
     @ObservationIgnored private var originalGamma: [CGDirectDisplayID: Gamma] = [:]
@@ -102,6 +100,7 @@ final class DisplayManager {
     func start() {
         guard !started else { return }
         started = true
+        dock.start()
         CGDisplayRegisterReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
@@ -123,12 +122,14 @@ final class DisplayManager {
         started = false
         CGDisplayRemoveReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
         changeTask?.cancel(); detailsTask?.cancel(); captureTask?.cancel(); workflowTask?.cancel(); permissionTask?.cancel(); hudHideTask?.cancel()
-        brightnessTasks.values.forEach { $0.cancel() }; volumeTasks.values.forEach { $0.cancel() }
+        brightnessTasks.values.forEach { $0.cancel() }
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         observers.removeAll(); workspaceObservers.removeAll()
         keys.uninstall()
         passwordPreference.stop()
+        dock.stop()
+        identification.stop()
         recordingAction = nil
         for id in Array(originalGamma.keys) { restoreGamma(id) }
         if changedBuiltinForWorkflow, let id = knownBuiltinID {
@@ -398,13 +399,13 @@ final class DisplayManager {
         let retained = Set(result.map(\.id))
         for id in Array(controls.keys) where !retained.contains(id) {
             brightnessTasks.removeValue(forKey: id)?.cancel()
-            volumeTasks.removeValue(forKey: id)?.cancel()
             originalGamma.removeValue(forKey: id)
             controls.removeValue(forKey: id)
         }
         displays = result.sorted { a, b in a.isBuiltin != b.isBuiltin ? a.isBuiltin : a.id < b.id }
         mainID = CGMainDisplayID()
         mirrored = displays.contains { $0.enabled && CGDisplayIsInMirrorSet($0.id) != 0 }
+        dock.update(displays: displays, mirrored: mirrored)
         synchronizePasswordPreference()
     }
 
@@ -497,23 +498,6 @@ final class DisplayManager {
         } else {
             mutateState(display.id) { $0.dimming = .software }
         }
-        let volume = await Subprocess.run("m1ddc", ["display", uuid, "get", "volume"], timeout: 2)
-        guard !Task.isCancelled, generation == expected else { return }
-        if volume.succeeded, let value = Double(volume.output), value.isFinite, value >= 0 {
-            let maximum = await Subprocess.run("m1ddc", ["display", uuid, "max", "volume"], timeout: 2)
-            guard !Task.isCancelled, generation == expected else { return }
-            let maxValue = maximum.succeeded ? Double(maximum.output) ?? 100 : 100
-            let maximumVolume = maxValue.isFinite && maxValue > 0 ? maxValue : 100
-            mutateState(display.id) {
-                $0.maximumVolume = maximumVolume
-                $0.hasVolume = true
-                if volumeTasks[display.id] == nil {
-                    $0.volume = min(100, value / maximumVolume * 100)
-                }
-            }
-        } else {
-            mutateState(display.id) { $0.hasVolume = false }
-        }
         let input = await Subprocess.run("m1ddc", ["display", uuid, "get", "input"], timeout: 2)
         guard !Task.isCancelled, generation == expected else { return }
         let inputValue = input.succeeded ? Int(input.output) ?? 0 : 0
@@ -560,26 +544,6 @@ final class DisplayManager {
         }
     }
 
-    func setVolume(_ display: DisplayInfo, _ value: Double) {
-        guard value.isFinite, state(display.id).hasVolume else { return }
-        let value = min(100, max(0, value))
-        mutateState(display.id) { $0.volume = value }
-        guard volumeTasks[display.id] == nil else { return }
-        volumeTasks[display.id] = Task { [weak self] in
-            guard let self else { return }
-            defer { self.volumeTasks[display.id] = nil }
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-                guard self.displays.contains(where: { $0.id == display.id && $0.uuid == display.uuid && $0.enabled }) else { return }
-                let target = self.state(display.id).volume
-                let raw = Int((target / 100 * self.state(display.id).maximumVolume).rounded())
-                let result = await Subprocess.run("m1ddc", ["display", display.uuid, "set", "volume", "\(raw)"], timeout: 2)
-                guard !Task.isCancelled else { return }
-                if !result.succeeded { self.lastError = "显示器音量设置失败。"; return }
-                if self.state(display.id).volume == target { return }
-            }
-        }
-    }
 
     func setInput(_ display: DisplayInfo, _ value: Int) async {
         guard !isApplying, state(display.id).hasInput else { return }

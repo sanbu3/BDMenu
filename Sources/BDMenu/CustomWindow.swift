@@ -12,6 +12,7 @@ struct WindowDragRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { DragView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
     private final class DragView: NSView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
     }
 }
@@ -28,6 +29,7 @@ struct WindowResizeHandle: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { ResizeView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
     private final class ResizeView: NSView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
@@ -58,8 +60,8 @@ struct WindowActionButton: View {
         }
         .buttonStyle(.plain)
         .focusEffectDisabled().focused($focused)
-        .background(Color.primary.opacity(hovered ? 0.12 : 0.055), in: Circle())
-        .overlay(Circle().strokeBorder(focused ? Color.blue : Color.primary.opacity(0.10), lineWidth: focused ? 2 : 1))
+        .background(Color.primary.opacity(hovered || (focused && InterfaceInputState.shared.keyboardNavigation) ? 0.15 : 0.055), in: Circle())
+        .overlay(Circle().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1))
         .onHover { hovered = $0 }
         .accessibilityLabel(label).help(label)
     }

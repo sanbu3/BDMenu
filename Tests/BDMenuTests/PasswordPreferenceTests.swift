@@ -3,6 +3,26 @@ import ApplicationServices
 @testable import BDMenu
 
 final class PasswordPreferenceTests: XCTestCase {
+    func testSettingsAuthorizationSheetsAreEligibleButOrdinarySettingsAreNot() {
+        XCTAssertEqual(PasswordFallbackPolicy.scope(bundleID: "com.apple.systempreferences", path: "/System/Applications/System Settings.app"), .settingsSheets)
+        XCTAssertNil(PasswordFallbackPolicy.scope(bundleID: "com.apple.systempreferences", path: "/Applications/Fake Settings.app"))
+        XCTAssertTrue(PasswordFallbackPolicy.mayInspectRoot(scope: .settingsSheets, role: kAXSheetRole as String, subrole: ""))
+        XCTAssertFalse(PasswordFallbackPolicy.mayInspectRoot(scope: .settingsSheets, role: kAXWindowRole as String, subrole: kAXStandardWindowSubrole as String))
+    }
+
+    func testFocusTargetsOnlySecurePasswordFields() {
+        XCTAssertTrue(PasswordFallbackPolicy.isSecureField(role: kAXTextFieldRole as String, subrole: kAXSecureTextFieldSubrole as String))
+        XCTAssertTrue(PasswordFallbackPolicy.isSecureField(role: "AXSecureTextField", subrole: ""))
+        XCTAssertFalse(PasswordFallbackPolicy.isSecureField(role: kAXTextFieldRole as String, subrole: ""))
+        XCTAssertFalse(PasswordFallbackPolicy.isSecureField(role: kAXTextAreaRole as String, subrole: ""))
+    }
+
+    func testActionSuccessAloneCannotConfirmAuthenticationTransition() {
+        XCTAssertEqual(AuthenticationTransition.state(targetVisible: false, elapsed: 0), .waiting)
+        XCTAssertEqual(AuthenticationTransition.state(targetVisible: false, elapsed: 3), .timedOut)
+        XCTAssertEqual(AuthenticationTransition.state(targetVisible: true, elapsed: 1), .ready)
+    }
+
     func testOnlyAppleAuthenticationServicesAreEligible() {
         XCTAssertTrue(PasswordFallbackPolicy.isSystemAuthenticationApp(
             bundleID: "com.apple.SecurityAgent", path: "/System/Library/Frameworks/Security.framework/SecurityAgent.bundle"))

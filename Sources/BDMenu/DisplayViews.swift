@@ -19,10 +19,11 @@ struct CapsuleMenu<Content: View>: View {
             .font(.system(size: 14))
             .padding(.horizontal, 16)
             .frame(minHeight: 44)
-            .background(Color.primary.opacity(0.045), in: Capsule())
-            .overlay(Capsule().strokeBorder(focused ? .blue : Color.primary.opacity(0.10), lineWidth: focused ? 2 : 1))
+            .background(Color.primary.opacity(focused && InterfaceInputState.shared.keyboardNavigation ? 0.10 : 0.045), in: Capsule())
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1))
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .focusEffectDisabled()
         .focused($focused)
@@ -106,16 +107,6 @@ struct DisplayCard: View {
     }
 
     @ViewBuilder private var advancedControls: some View {
-        if state.hasVolume {
-            Divider()
-            HStack(spacing: 14) {
-                Label("音量", systemImage: "speaker.wave.2").font(BDMenuStyle.body)
-                Slider(value: Binding(get: { dm.state(display.id).volume }, set: { dm.setVolume(display, $0) }), in: 0...100)
-                    .controlSize(.large).accessibilityLabel("\(display.name)音量")
-                Text("\(Int(state.volume.rounded()))%")
-                    .font(.system(size: 14, design: .monospaced)).frame(width: 48, alignment: .trailing)
-            }
-        }
         if !state.modes.isEmpty {
             CapsuleMenu(title: "分辨率", value: state.modes.first(where: { $0.id == state.currentMode })?.label ?? "当前模式") {
                 Picker("分辨率", selection: Binding(get: { dm.state(display.id).currentMode }, set: { number in

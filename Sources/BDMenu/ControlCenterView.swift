@@ -115,6 +115,10 @@ private struct DisplaysPage: View {
             StatusPill(title: "\(dm.displays.count) 块已连接", color: .secondary)
             if dm.mirrored { StatusPill(title: "镜像显示") }
             Spacer()
+            Button { dm.identification.show(displays: dm.presentationDisplays) } label: {
+                Label("识别屏幕", systemImage: "number.square")
+            }
+            .disabled(!dm.displays.contains(where: \.enabled))
             Button { dm.scheduleRefresh(reprobe: true) } label: { Label("重新检测", systemImage: "arrow.clockwise") }
                 .disabled(dm.isApplying)
         }
@@ -127,6 +131,7 @@ private struct DisplaysPage: View {
             }
         }
         ForEach(dm.presentationDisplays) { DisplayCard(display: $0) }
+        DockSettingsCard()
         BDMenuCard {
             VStack(alignment: .leading, spacing: 18) {
                 SectionHeading(title: "布局与恢复", subtitle: "切换镜像，或找回暂时关闭的屏幕。", symbol: "rectangle.2.swap")
@@ -182,6 +187,17 @@ private struct AutomationPage: View {
                 if dm.preferPasswordWhenBuiltinOff && dm.passwordPreference.status == .needsAccessibility {
                     Button("允许自动切换…") { dm.requestPermission() }
                         .buttonStyle(BDMenuCapsuleButtonStyle(prominent: true))
+                }
+                HStack {
+                    Button("测试验证切换") { dm.passwordPreference.testAuthentication() }
+                    Button("取消测试") { dm.passwordPreference.cancelTest() }.disabled(!dm.passwordPreference.isTesting)
+                    Spacer()
+                }
+                if let message = dm.passwordPreference.testMessage {
+                    Text(message).font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                }
+                DisclosureGroup("验证检测详情") {
+                    Text(dm.passwordPreference.diagnostics).font(BDMenuStyle.detail).foregroundStyle(.secondary)
                 }
                 Divider()
                 Text("手动停用内建屏、合盖或外接屏工作流关闭内建屏，都会优先密码；重新启用内建屏后恢复优先 Touch ID。指纹不可用时仍用密码。系统设置、安装软件等授权窗口需提供相应切换入口；不会更改系统指纹设置，也不会读取或提交密码。")

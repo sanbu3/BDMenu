@@ -26,6 +26,22 @@ final class BrightnessTests: XCTestCase {
         XCTAssertEqual(calls.count, 2)
     }
 
+    func testShiftAloneEnablesFineStepsAndKeepsModifiedBindings() async {
+        let keys = BrightnessKeys()
+        keys.enabled = true
+        var fine: [Bool] = []
+        keys.onAdjust = { _, precise in fine.append(precise); return true }
+        XCTAssertTrue(keys.handle(key(118, flags: .maskShift)))
+        XCTAssertTrue(keys.handle(key(118, down: false)))
+        XCTAssertTrue(keys.handle(key(3, flags: .maskShift, kind: .media)))
+        XCTAssertEqual(fine, [true, true])
+        let optionBinding = BrightnessShortcut(kind: .keyboard, code: 96, modifiers: CGEventFlags.maskAlternate.rawValue, keyLabel: "F5")
+        XCTAssertEqual(optionBinding.match(kind: .keyboard, code: 96, flags: [.maskAlternate, .maskShift]), true)
+        XCTAssertNil(BrightnessShortcut.defaultIncrease.match(kind: .keyboard, code: 96, flags: [.maskCommand, .maskShift]))
+        let shiftedBinding = BrightnessShortcut(kind: .keyboard, code: 96, modifiers: CGEventFlags.maskShift.rawValue, keyLabel: "F5")
+        XCTAssertEqual(shiftedBinding.match(kind: .keyboard, code: 96, flags: .maskShift), false)
+    }
+
     func testReleaseAndRepeatOwnership() async {
         let keys = BrightnessKeys()
         keys.enabled = true

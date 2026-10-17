@@ -93,11 +93,10 @@ struct BDMenuCapsuleButtonStyle: PrimitiveButtonStyle {
             .focusEffectDisabled()
             .focused($focused)
             .background {
-                Capsule().fill(prominent ? BDMenuStyle.accent : Color.primary.opacity(hovered ? 0.10 : 0.055))
+                Capsule().fill(prominent ? BDMenuStyle.accent : Color.primary.opacity(hovered || (focused && InterfaceInputState.shared.keyboardNavigation) ? 0.10 : 0.055))
             }
             .overlay {
-                Capsule().strokeBorder(focused ? BDMenuStyle.accent : Color.primary.opacity(prominent ? 0 : 0.10),
-                                       lineWidth: focused ? 2 : 1)
+                Capsule().strokeBorder(Color.primary.opacity(prominent ? 0 : 0.10), lineWidth: 1)
             }
             .onHover { hovered = $0 }
             .opacity(enabled ? 1 : 0.42)

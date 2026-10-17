@@ -52,7 +52,7 @@ struct KeyboardSettingsView: View {
                 Divider()
                 HStack(spacing: 8) {
                     Image(systemName: "hand.tap").foregroundStyle(.blue)
-                    Text("按住连续调节 · 额外按 ⇧⌥ 精细调节")
+                    Text("按住连续调节 · 额外按 ⇧ 精细调节")
                         .font(BDMenuStyle.detail).foregroundStyle(.secondary)
                     Spacer()
                     Button("恢复 F4 / F5") { dm.resetShortcuts() }

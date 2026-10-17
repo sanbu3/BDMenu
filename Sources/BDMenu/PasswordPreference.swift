@@ -16,6 +16,25 @@ enum PasswordFallbackPolicy {
         bundleIDs.contains(bundleID) && (path as NSString).standardizingPath.hasPrefix("/System/Library/")
     }
 
+    enum Scope: Equatable, Sendable { case service, settingsSheets }
+    struct Process: Sendable { let pid: pid_t; let scope: Scope }
+
+    static func scope(bundleID: String, path: String) -> Scope? {
+        if isSystemAuthenticationApp(bundleID: bundleID, path: path) { return .service }
+        if bundleID == "com.apple.systempreferences",
+           (path as NSString).standardizingPath == "/System/Applications/System Settings.app" { return .settingsSheets }
+        return nil
+    }
+
+    static func mayInspectRoot(scope: Scope, role: String, subrole: String) -> Bool {
+        scope == .service || role == kAXSheetRole as String
+            || (role == kAXWindowRole as String && subrole == kAXSystemDialogSubrole as String)
+    }
+
+    static func isSecureField(role: String, subrole: String) -> Bool {
+        role == "AXSecureTextField" || (role == kAXTextFieldRole as String && subrole == kAXSecureTextFieldSubrole as String)
+    }
+
     static func isPasswordFallback(role: String, label: String, enabled: Bool, supportsPress: Bool) -> Bool {
         return isMethodButton(.password, role: role, label: label, enabled: enabled, supportsPress: supportsPress)
     }
@@ -67,6 +86,14 @@ enum AuthenticationPreferencePolicy {
     }
 }
 
+enum AuthenticationTransition {
+    enum State: Equatable { case waiting, ready, timedOut }
+    static func state(targetVisible: Bool, elapsed: TimeInterval) -> State {
+        if targetVisible { return .ready }
+        return elapsed < 3 ? .waiting : .timedOut
+    }
+}
+
 private final class PasswordPreferenceGate: @unchecked Sendable {
     private let lock = NSLock()
     private var generation = 0
@@ -92,7 +119,7 @@ private final class PasswordPreferenceGate: @unchecked Sendable {
 final class PasswordPreferenceController {
     enum Status: Equatable {
         case disabled, waitingForDisplay, needsAccessibility
-        case watching(AuthenticationMethod), switched(AuthenticationMethod), unavailable(AuthenticationMethod)
+        case watching(AuthenticationMethod), switching(AuthenticationMethod), switched(AuthenticationMethod), unavailable(AuthenticationMethod)
 
         var text: String {
             switch self {
@@ -101,7 +128,9 @@ final class PasswordPreferenceController {
             case .needsAccessibility: return "需要辅助功能权限，才能切换系统验证窗口。"
             case .watching(.touchID): return "内建屏可用，优先 Touch ID。"
             case .watching(.password): return "内建屏或 Touch ID 不可用，优先密码。"
-            case .switched(let method): return "已选择\(method.title)验证，请在系统窗口中完成。"
+            case .switching(let method): return "正在切换到\(method.title)，等待确认输入页面。"
+            case .switched(.password): return "已进入密码输入页，请在系统窗口中输入。"
+            case .switched(.touchID): return "已进入 Touch ID 验证页。"
             case .unavailable(let method): return "系统未允许自动切换，请在验证窗口选择\(method.title)。"
             }
         }
@@ -118,6 +147,10 @@ final class PasswordPreferenceController {
             }
         }
     }
+    var diagnostics = "等待系统授权窗口。"
+    var testMessage: String?
+    var isTesting = false
+    @ObservationIgnored private var testContext: LAContext?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var lastSwitchAt: Date?
     @ObservationIgnored private var lastMethod: AuthenticationMethod?
@@ -132,17 +165,19 @@ final class PasswordPreferenceController {
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                let pids = NSWorkspace.shared.runningApplications.compactMap { app -> pid_t? in
+                let processes = NSWorkspace.shared.runningApplications.compactMap { app -> PasswordFallbackPolicy.Process? in
                     guard let bundle = app.bundleIdentifier, let path = app.bundleURL?.path,
-                          PasswordFallbackPolicy.isSystemAuthenticationApp(bundleID: bundle, path: path) else { return nil }
-                    return app.processIdentifier
+                          let scope = PasswordFallbackPolicy.scope(bundleID: bundle, path: path) else { return nil }
+                    return PasswordFallbackPolicy.Process(pid: app.processIdentifier, scope: scope)
                 }
-                let (method, result) = await self.worker.scan(pids: pids, gate: self.gate, generation: generation)
+                let (method, result, diagnostics) = await self.worker.scan(processes: processes, gate: self.gate, generation: generation)
                 guard !Task.isCancelled else { return }
+                self.diagnostics = diagnostics
                 if self.lastMethod != method { self.lastSwitchAt = nil; self.lastMethod = method }
                 if !AXIsProcessTrusted() { self.status = .needsAccessibility }
                 else if let method {
                     switch result {
+                    case .switching: self.status = .switching(method)
                     case .switched: self.status = .switched(method); self.lastSwitchAt = Date()
                     case .unavailable: self.status = .unavailable(method)
                     case .noChange:
@@ -154,7 +189,31 @@ final class PasswordPreferenceController {
         }
     }
 
+    func testAuthentication() {
+        testContext?.invalidate()
+        let context = LAContext()
+        context.localizedFallbackTitle = "使用密码"
+        testContext = context
+        isTesting = true
+        testMessage = "测试验证窗口已打开，可以直接取消，不会修改系统设置。"
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "测试跟随屏幕的验证方式。可以取消，不会修改任何系统设置。") { [weak self] success, _ in
+            Task { @MainActor in
+                guard self?.testContext === context else { return }
+                self?.isTesting = false
+                self?.testMessage = success ? "已完成测试验证。" : "测试已结束或取消，没有修改系统设置。"
+                self?.testContext = nil
+            }
+        }
+    }
+
+    func cancelTest() {
+        if isTesting { testMessage = "测试已取消，没有修改系统设置。" }
+        isTesting = false
+        testContext?.invalidate(); testContext = nil
+    }
+
     func stop() {
+        cancelTest()
         _ = gate.invalidate()
         task?.cancel()
         task = nil
@@ -165,50 +224,113 @@ final class PasswordPreferenceController {
 
 // All mutable worker state is confined to its private serial queue.
 private final class PasswordDialogWorker: @unchecked Sendable {
-    enum Result { case noChange, switched, unavailable }
+    enum Result { case noChange, switching, switched, unavailable }
+    private var scanComplete = true
+    private var lastAXError: Int32 = 0
     private let queue = DispatchQueue(label: "com.local.BDMenu.passwordFallback", qos: .utility)
     // Read and updated only on queue. Retain pressed elements until their dialog closes.
-    private struct Selection { let window: AXUIElement; let method: AuthenticationMethod }
+    private struct Selection {
+        let window: AXUIElement
+        let method: AuthenticationMethod
+        let attemptedAt: Date
+        var confirmed: Bool
+    }
+    private struct Dialog {
+        var methodButtons: [AXUIElement] = []
+        var secureFields: [AXUIElement] = []
+        var hasPasswordFallback = false
+    }
     private var pressed: [pid_t: [Selection]] = [:]
 
-    func scan(pids: [pid_t], gate: PasswordPreferenceGate, generation: Int) async -> (AuthenticationMethod?, Result) {
+    func scan(processes: [PasswordFallbackPolicy.Process], gate: PasswordPreferenceGate, generation: Int) async -> (AuthenticationMethod?, Result, String) {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
+                let pids = processes.map(\.pid)
+                scanComplete = true
+                lastAXError = 0
+                var windowCount = 0
+                var matchCount = 0
                 let preference = AuthenticationPreferencePolicy.current()
                 guard let method = preference, AXIsProcessTrusted() else {
-                    continuation.resume(returning: (preference, .noChange)); return
+                    continuation.resume(returning: (preference, .noChange, "系统认证服务 \(pids.count) 个；等待可读取的授权窗口。")); return
                 }
                 pressed = pressed.filter { pids.contains($0.key) }
                 var result = Result.noChange
-                for pid in pids {
+                for process in processes {
+                    let pid = process.pid
                     let app = AXUIElementCreateApplication(pid)
                     AXUIElementSetMessagingTimeout(app, 0.04)
-                    let windows = elements(app, kAXWindowsAttribute)
+                    let windows = dialogRoots(in: app, scope: process.scope)
+                    windowCount += windows.count
                     pressed[pid] = pressed[pid, default: []].filter { previous in
                         windows.contains { CFEqual($0, previous.window) }
                     }
                     for window in windows {
                         guard bool(window, kAXMinimizedAttribute) != true else { continue }
-                        let matches = fallbackButtons(in: window, method: method)
-                        guard !matches.isEmpty else { continue }
-                        guard !pressed[pid, default: []].contains(where: { CFEqual($0.window, window) && $0.method == method }) else { continue }
-                        // Ambiguous or unfamiliar UI stays under the user's control.
+                        let dialog = inspectDialog(in: window, method: method)
+                        let matches = dialog.methodButtons
+                        matchCount += matches.count
+                        let targetVisible = method == .password ? dialog.secureFields.count == 1
+                            : dialog.hasPasswordFallback && dialog.secureFields.isEmpty
+                        if let selected = pressed[pid, default: []].first(where: { CFEqual($0.window, window) && $0.method == method }) {
+                            guard !selected.confirmed else { continue }
+                            switch AuthenticationTransition.state(targetVisible: targetVisible, elapsed: Date().timeIntervalSince(selected.attemptedAt)) {
+                            case .ready:
+                                guard gate.permits(generation, method: method), AXIsProcessTrusted() else { continue }
+                                if method == .password { focusPassword(dialog.secureFields) }
+                                pressed[pid]?.removeAll { CFEqual($0.window, window) }
+                                pressed[pid, default: []].append(Selection(window: window, method: method, attemptedAt: selected.attemptedAt, confirmed: true))
+                                result = .switched
+                            case .waiting: if result == .noChange { result = .switching }
+                            case .timedOut: if result != .switched { result = .unavailable }
+                            }
+                            continue
+                        }
+                        // A password page may already be showing when monitoring begins.
+                        if method == .password, targetVisible, gate.permits(generation, method: method), AXIsProcessTrusted() {
+                            focusPassword(dialog.secureFields)
+                            pressed[pid, default: []].append(Selection(window: window, method: method, attemptedAt: Date(), confirmed: true))
+                            result = .switched
+                            continue
+                        }
                         guard matches.count == 1, gate.permits(generation, method: method), AXIsProcessTrusted() else { continue }
                         if AXUIElementPerformAction(matches[0], kAXPressAction as CFString) == .success {
                             pressed[pid, default: []].removeAll { CFEqual($0.window, window) }
-                            pressed[pid, default: []].append(Selection(window: window, method: method))
-                            result = .switched
+                            pressed[pid, default: []].append(Selection(window: window, method: method, attemptedAt: Date(), confirmed: false))
+                            if result != .switched { result = .switching }
                         } else if result != .switched { result = .unavailable }
                     }
                 }
-                continuation.resume(returning: (method, result))
+                continuation.resume(returning: (method, result, "服务 \(pids.count) · 窗口 \(windowCount) · 入口 \(matchCount) · 完整读取 \(scanComplete ? "是" : "否") · AX \(lastAXError)"))
             }
         }
     }
 
-    private func fallbackButtons(in root: AXUIElement, method: AuthenticationMethod) -> [AXUIElement] {
+    private func dialogRoots(in app: AXUIElement, scope: PasswordFallbackPolicy.Scope) -> [AXUIElement] {
+        var candidates = elements(app, kAXWindowsAttribute)
+        if let raw = attribute(app, kAXFocusedWindowAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() {
+            candidates.append(raw as! AXUIElement)
+        }
+        // Settings presents authorization as a sheet, owned by its own process.
+        for window in candidates {
+            candidates.append(contentsOf: elements(window, "AXSheets"))
+            candidates.append(contentsOf: elements(window, kAXChildrenAttribute).filter {
+                string($0, kAXRoleAttribute) == kAXSheetRole as String
+            })
+        }
+        var roots: [AXUIElement] = []
+        for candidate in candidates where !roots.contains(where: { CFEqual($0, candidate) }) {
+            if PasswordFallbackPolicy.mayInspectRoot(scope: scope,
+                role: string(candidate, kAXRoleAttribute) ?? "", subrole: string(candidate, kAXSubroleAttribute) ?? "") {
+                roots.append(candidate)
+            }
+        }
+        return roots
+    }
+
+    private func inspectDialog(in root: AXUIElement, method: AuthenticationMethod) -> Dialog {
         var pending: [(AXUIElement, Int)] = [(root, 0)]
-        var matches: [AXUIElement] = []
+        var dialog = Dialog()
         let deadline = Date().addingTimeInterval(0.15)
         var visited = 0
         while visited < 120, Date() < deadline, let (element, depth) = pending.popLast() {
@@ -216,7 +338,13 @@ private final class PasswordDialogWorker: @unchecked Sendable {
             AXUIElementSetMessagingTimeout(element, 0.03)
             let role = string(element, kAXRoleAttribute) ?? ""
             // Never inspect children or values of editable controls.
-            if role == kAXTextFieldRole as String || role == kAXTextAreaRole as String { continue }
+            if role == kAXTextFieldRole as String || role == "AXSecureTextField" {
+                if PasswordFallbackPolicy.isSecureField(role: role, subrole: string(element, kAXSubroleAttribute) ?? "") {
+                    dialog.secureFields.append(element)
+                }
+                continue
+            }
+            if role == kAXTextAreaRole as String { continue }
             if role == kAXButtonRole as String {
                 let title = string(element, kAXTitleAttribute) ?? ""
                 let label = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -226,20 +354,32 @@ private final class PasswordDialogWorker: @unchecked Sendable {
                 let supportsPress = (actions as? [String])?.contains(kAXPressAction as String) == true
                 if PasswordFallbackPolicy.isMethodButton(method, role: role, label: label,
                     enabled: bool(element, kAXEnabledAttribute) == true, supportsPress: supportsPress) {
-                    matches.append(element)
+                    dialog.methodButtons.append(element)
+                }
+                if PasswordFallbackPolicy.isPasswordFallback(role: role, label: label,
+                    enabled: bool(element, kAXEnabledAttribute) == true, supportsPress: supportsPress) {
+                    dialog.hasPasswordFallback = true
                 }
             }
             let children = elements(element, kAXChildrenAttribute)
-            if depth >= 9 && !children.isEmpty { return [] }
+            if depth >= 9 && !children.isEmpty { scanComplete = false; return Dialog() }
             pending.append(contentsOf: children.map { ($0, depth + 1) })
         }
         // A partial traversal cannot establish that a match is unique.
-        return pending.isEmpty ? matches : []
+        if !pending.isEmpty { scanComplete = false }
+        return pending.isEmpty ? dialog : Dialog()
+    }
+
+    private func focusPassword(_ fields: [AXUIElement]) {
+        guard fields.count == 1 else { return }
+        // Only set focus. Never read a field's value or synthesize a keystroke.
+        _ = AXUIElementSetAttributeValue(fields[0], kAXFocusedAttribute as CFString, kCFBooleanTrue)
     }
 
     private func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
         var result: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, key as CFString, &result) == .success else { return nil }
+        let error = AXUIElementCopyAttributeValue(element, key as CFString, &result)
+        guard error == .success else { lastAXError = error.rawValue; return nil }
         return result
     }
     private func elements(_ element: AXUIElement, _ key: String) -> [AXUIElement] { attribute(element, key) as? [AXUIElement] ?? [] }

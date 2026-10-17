@@ -20,7 +20,8 @@ struct BrightnessShortcut: Codable, Equatable {
     let modifiers: UInt64
     let keyLabel: String
     static let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
-    static let fineModifiers: CGEventFlags = [.maskAlternate, .maskShift]
+    static let fineModifiers: CGEventFlags = [.maskShift]
+    static let legacyFineModifiers: CGEventFlags = [.maskAlternate, .maskShift]
     static let functionKeys: [Int: String] = [
         122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
         98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12",
@@ -46,7 +47,7 @@ struct BrightnessShortcut: Codable, Equatable {
         let pressed = flags.intersection(Self.modifierMask).rawValue
         if pressed == modifiers { return false }
         let fine = Self.fineModifiers.rawValue
-        if modifiers & fine == 0, pressed == modifiers | fine { return true }
+        if modifiers & fine == 0, pressed == modifiers | fine || pressed == modifiers | Self.legacyFineModifiers.rawValue { return true }
         return nil
     }
 }

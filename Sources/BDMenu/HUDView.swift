@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Center against the physical screen, while keeping above a bottom Dock.
 enum HUDLayout {
-    static let size = CGSize(width: 280, height: 88)
+    static let size = CGSize(width: 280, height: 76)
 
     static func frame(screen: CGRect, visible: CGRect, scale: CGFloat = 1) -> CGRect {
         let scale = max(1, scale)
@@ -17,14 +17,12 @@ struct HUDView: View {
     var value: Int = 50
 
     var body: some View {
-        VStack(spacing: 13) {
+        VStack(spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 9) {
                 Image(systemName: "sun.max.fill")
                     .font(.system(size: 18, weight: .medium)).foregroundStyle(.blue)
                 Text("亮度").font(.system(size: 15, weight: .medium))
-                Text("\(max(0, min(100, value)))%")
-                    .font(.system(size: 23, weight: .semibold, design: .rounded))
-                    .monospacedDigit().frame(width: 70, alignment: .trailing)
+
             }
             .frame(maxWidth: .infinity, alignment: .center)
             GeometryReader { geometry in
@@ -41,6 +39,6 @@ struct HUDView: View {
         .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous)
             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("屏幕亮度 \(value)%")
+        .accessibilityLabel("屏幕亮度已调整")
     }
 }

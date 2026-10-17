@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var popover: NSPopover?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        InterfaceInputState.shared.start()
         manager.start()
         presentation.applyAppearance()
         configureMenus()
@@ -48,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         presentation.show()
         return true
     }
-    func applicationWillTerminate(_ notification: Notification) { manager.stop() }
+    func applicationWillTerminate(_ notification: Notification) { InterfaceInputState.shared.stop(); manager.stop() }
     func popoverWillShow(_ notification: Notification) { manager.panelOpened() }
 
     @objc private func toggleQuickControls() {

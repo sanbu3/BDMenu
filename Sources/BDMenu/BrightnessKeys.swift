@@ -87,10 +87,10 @@ final class BrightnessKeys {
             else { delta = [113, 145].contains(input.code) ? 1 : [107, 144].contains(input.code) ? -1 : nil }
             if let delta {
                 let pressed = input.flags.intersection(BrightnessShortcut.modifierMask)
-                guard pressed.isEmpty || pressed == BrightnessShortcut.fineModifiers else {
+                guard pressed.isEmpty || pressed == BrightnessShortcut.fineModifiers || pressed == BrightnessShortcut.legacyFineModifiers else {
                     return consumed.contains(input.identity)
                 }
-                if onAdjust?(delta, pressed == BrightnessShortcut.fineModifiers) == true {
+                if onAdjust?(delta, !pressed.isEmpty) == true {
                     consumed.insert(input.identity)
                     return true
                 }
