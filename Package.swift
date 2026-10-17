@@ -6,5 +6,6 @@ var targets: [Target] = [
 ]
 #if os(macOS)
 targets.append(.executableTarget(name: "BDMenu", dependencies: ["DisplayCore"]))
+targets.append(.testTarget(name: "BDMenuTests", dependencies: ["BDMenu"]))
 #endif
 let package = Package(name: "BDMenu", platforms: [.macOS(.v14)], targets: targets)

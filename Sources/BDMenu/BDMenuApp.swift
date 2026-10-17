@@ -17,5 +17,9 @@ struct BDMenuApp: App {
             Image(systemName: delegate.manager.externalOnline ? "display.2" : "display")
         }
         .menuBarExtraStyle(.window)
+        Window("亮度快捷键", id: "brightness-keys") {
+            KeyboardSettingsView().environment(delegate.manager)
+        }
+        .windowResizability(.contentSize)
     }
 }

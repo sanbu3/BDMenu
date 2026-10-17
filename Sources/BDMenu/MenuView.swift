@@ -11,10 +11,11 @@ private struct MenuContentHeightKey: PreferenceKey {
 @MainActor
 struct MenuView: View {
     @Environment(DisplayManager.self) private var dm
+    @Environment(\.openWindow) private var openWindow
     @State private var contentHeight: CGFloat = 440
 
     private var maximumPanelHeight: CGFloat {
-        min(680, max(320, (NSScreen.main?.visibleFrame.height ?? 720) - 36))
+        min(780, max(360, (NSScreen.main?.visibleFrame.height ?? 720) - 36))
     }
 
     private var panelHeight: CGFloat {
@@ -23,7 +24,7 @@ struct MenuView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 16) {
                 header
 
                 if dm.displays.isEmpty {
@@ -33,7 +34,7 @@ struct MenuView: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
+                    .padding(16)
                     .background(cardBackground)
                 }
 
@@ -50,9 +51,11 @@ struct MenuView: View {
                 actions
                 footer
             }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .padding(12)
+            .font(BDMenuStyle.body)
+            .toggleStyle(BDMenuSwitchStyle())
+            .buttonStyle(BDMenuCapsuleButtonStyle())
+            .controlSize(.large)
+            .padding(16)
             .background {
                 GeometryReader { proxy in
                     Color.clear.preference(key: MenuContentHeightKey.self, value: proxy.size.height)
@@ -60,7 +63,7 @@ struct MenuView: View {
             }
         }
         .scrollIndicators(contentHeight > maximumPanelHeight ? .visible : .hidden)
-        .frame(width: 410, height: max(1, panelHeight))
+        .frame(width: 500, height: max(1, panelHeight))
         .onPreferenceChange(MenuContentHeightKey.self) { height in
             guard height > 0, abs(contentHeight - height) > 0.5 else { return }
             contentHeight = ceil(height)
@@ -71,7 +74,7 @@ struct MenuView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Label("显示器", systemImage: "display.2")
-                .font(.headline)
+                .font(BDMenuStyle.title)
             Spacer()
             if dm.isApplying {
                 ProgressView().controlSize(.small)
@@ -79,7 +82,7 @@ struct MenuView: View {
             Button { dm.scheduleRefresh(reprobe: true) } label: {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(BDMenuCapsuleButtonStyle())
             .buttonBorderShape(.capsule)
             .help("重新检测显示器与亮度控制能力")
             .disabled(dm.isApplying)
@@ -88,9 +91,9 @@ struct MenuView: View {
     }
 
     private var settings: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("设置")
-                .font(.caption.weight(.semibold))
+                .font(BDMenuStyle.section)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 2)
 
@@ -98,7 +101,7 @@ struct MenuView: View {
                 Toggle("自动工作流", isOn: Binding(get: { dm.autoWorkflow }, set: { dm.setAutoWorkflow($0) }))
             }
             Text("连接外置屏后关闭内置屏；断开后恢复。退出应用时会恢复由自动工作流关闭的内置屏。")
-                .font(.caption)
+                .font(BDMenuStyle.detail)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
 
@@ -112,35 +115,70 @@ struct MenuView: View {
             Text(dm.keyboardBacklightAvailable
                  ? "关闭内置屏时保存并关闭内置键盘背光；内置屏恢复或取消同步时还原。"
                  : "当前设备未检测到可控制的内置键盘背光。")
-                .font(.caption)
+                .font(BDMenuStyle.detail)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
 
             settingCapsule {
-                Toggle("亮度键跟随鼠标", isOn: Binding(get: { dm.followPointerEnabled }, set: { dm.setFollowPointer($0) }))
+                Toggle("内建屏关闭时优先密码验证", isOn: Binding(
+                    get: { dm.preferPasswordWhenBuiltinOff },
+                    set: { dm.setPreferPasswordWhenBuiltinOff($0) }
+                ))
+            }
+            if dm.preferPasswordWhenBuiltinOff {
+                Text(dm.passwordPreference.status.text)
+                    .font(BDMenuStyle.detail)
+                    .foregroundStyle(dm.passwordPreference.status == .needsAccessibility || dm.passwordPreference.status == .unavailable ? .orange : .secondary)
+                    .padding(.horizontal, 10)
+                if dm.passwordPreference.status == .needsAccessibility {
+                    Button("允许自动切换…") { dm.requestPermission() }
+                        .padding(.horizontal, 10)
+                }
+                Text("自动选择支持的系统弹窗中的“使用密码”。不改变锁屏或第三方应用的验证策略。")
+                    .font(BDMenuStyle.detail)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
             }
 
-            if dm.followPointerEnabled {
+            settingCapsule {
+                Toggle("亮度快捷键", isOn: Binding(get: { dm.keyboardEnabled }, set: { dm.setKeyboardEnabled($0) }))
+            }
+            HStack {
+                Text("自定义亮度按键")
+                    .font(BDMenuStyle.detail)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("按键设置…") {
+                    openWindow(id: "brightness-keys")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+            }
+            .padding(.horizontal, 10)
+
+            Text("\(dm.decreaseShortcut.label) 降低 · \(dm.increaseShortcut.label) 提高 · \(dm.brightnessTarget.title)")
+                .font(BDMenuStyle.detail)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+
+            if dm.keyboardEnabled {
                 pointerPermissionStatus
                     .padding(.horizontal, 10)
             }
 
-            HStack(spacing: 8) {
-                settingCapsule {
-                    Toggle("镜像模式", isOn: Binding(
-                        get: { dm.mirrored },
-                        set: { value in Task { await dm.setMirror(value) } }
-                    ))
-                    .disabled(dm.isApplying || dm.displays.filter(\.enabled).count < 2)
-                }
-                settingCapsule {
-                    Toggle("登录时启动", isOn: Binding(get: { dm.launchAtLogin }, set: { dm.setLaunchAtLogin($0) }))
-                }
+            settingCapsule {
+                Toggle("镜像模式", isOn: Binding(
+                    get: { dm.mirrored },
+                    set: { value in Task { await dm.setMirror(value) } }
+                ))
+                .disabled(dm.isApplying || dm.displays.filter(\.enabled).count < 2)
+            }
+            settingCapsule {
+                Toggle("登录时启动", isOn: Binding(get: { dm.launchAtLogin }, set: { dm.setLaunchAtLogin($0) }))
             }
 
             if dm.loginStatus == .requiresApproval {
                 Text("登录启动需要在系统设置 → 通用 → 登录项中允许。")
-                    .font(.caption)
+                    .font(BDMenuStyle.detail)
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 10)
             }
@@ -152,26 +190,26 @@ struct MenuView: View {
         if !dm.keysTrusted {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("等待辅助功能授权。允许后会自动生效。")
-                    .font(.caption)
+                    .font(BDMenuStyle.detail)
                     .foregroundStyle(.orange)
                 Spacer(minLength: 4)
                 Button("打开设置") { dm.requestPermission() }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(BDMenuCapsuleButtonStyle())
                     .buttonBorderShape(.capsule)
             }
         } else if !dm.keysInstalled {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("按键监听未启动。")
-                    .font(.caption)
+                    .font(BDMenuStyle.detail)
                     .foregroundStyle(.orange)
                 Spacer(minLength: 4)
                 Button("重新检测") { dm.refreshPermission() }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(BDMenuCapsuleButtonStyle())
                     .buttonBorderShape(.capsule)
             }
         } else {
             Text("已启用 · ⇧⌥ + 亮度键可精细调节")
-                .font(.caption)
+                .font(BDMenuStyle.detail)
                 .foregroundStyle(.secondary)
         }
     }
@@ -184,20 +222,20 @@ struct MenuView: View {
             Button("全部点亮") { dm.wakeAll() }
                 .help("恢复屏幕和亮度，并暂停自动工作流")
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(BDMenuCapsuleButtonStyle())
         .buttonBorderShape(.capsule)
     }
 
     private var footer: some View {
         HStack {
             Text("BDMenu \(dm.version)")
-                .font(.caption)
+                .font(BDMenuStyle.detail)
                 .foregroundStyle(.secondary)
             Spacer()
             Button("退出") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.bordered)
+                .buttonStyle(BDMenuCapsuleButtonStyle())
                 .buttonBorderShape(.capsule)
-                .controlSize(.mini)
+                .controlSize(.large)
         }
         .padding(.top, 2)
     }
@@ -207,13 +245,13 @@ struct MenuView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             Text(error)
-                .font(.caption)
+                .font(BDMenuStyle.detail)
                 .textSelection(.enabled)
             Spacer(minLength: 4)
             Button { dm.lastError = nil } label: {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(BDMenuCapsuleButtonStyle())
             .help("关闭提示")
         }
         .padding(10)
@@ -230,35 +268,35 @@ struct MenuView: View {
     @ViewBuilder
     private func displaySection(_ display: DisplayManager.DisplayInfo) -> some View {
         let state = dm.state(display.id)
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
                 Image(systemName: display.isBuiltin ? "laptopcomputer" : "display")
                     .foregroundStyle(.secondary)
                 Text(display.name)
-                    .fontWeight(.medium)
+                    .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
                     .help(display.name)
                 if display.id == dm.mainID {
                     Text("主屏")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
+                        .font(BDMenuStyle.detail)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
                         .background(.blue.opacity(0.12), in: Capsule())
                         .foregroundStyle(.blue)
                 }
                 Spacer()
                 Circle()
                     .fill(display.enabled ? .green : .gray)
-                    .frame(width: 6, height: 6)
+                    .frame(width: 8, height: 8)
                 Button(display.enabled ? "关闭" : "打开") { dm.toggleDisplay(display) }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(BDMenuCapsuleButtonStyle())
                     .buttonBorderShape(.capsule)
                     .disabled(dm.isApplying || (display.enabled && dm.displays.filter(\.enabled).count <= 1))
             }
 
             if !display.enabled {
                 Text("已关闭。打开后可调整显示设置。")
-                    .font(.caption)
+                    .font(BDMenuStyle.detail)
                     .foregroundStyle(.secondary)
             } else {
                 slider("亮度", icon: "sun.max", value: state.brightness) { dm.setBrightness(display.id, $0) }
@@ -267,11 +305,11 @@ struct MenuView: View {
                 if !display.isBuiltin {
                     if state.dimming == .software {
                         Text("软件调光 · 不改变显示器背光，退出时恢复色彩曲线")
-                            .font(.caption2)
+                            .font(BDMenuStyle.detail)
                             .foregroundStyle(.secondary)
                     } else if state.dimming == .unknown {
                         Text("正在检测亮度控制…")
-                            .font(.caption2)
+                            .font(BDMenuStyle.detail)
                             .foregroundStyle(.secondary)
                     }
 
@@ -310,21 +348,21 @@ struct MenuView: View {
 
                 if display.id != dm.mainID && !dm.mirrored {
                     Button("设为主屏") { Task { await dm.setMain(display) } }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(BDMenuCapsuleButtonStyle())
                         .buttonBorderShape(.capsule)
                         .disabled(dm.isApplying)
                 }
             }
         }
-        .padding(12)
+        .padding(16)
         .background(cardBackground)
     }
 
     private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(Color.primary.opacity(0.045))
+        RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .fill(.thinMaterial)
             .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
             )
     }
@@ -332,8 +370,9 @@ struct MenuView: View {
     private func settingCapsule<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .frame(minHeight: 38)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .frame(minHeight: 56)
             .background(
                 Capsule()
                     .fill(Color.primary.opacity(0.055))
@@ -348,12 +387,15 @@ struct MenuView: View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .foregroundStyle(.secondary)
-                .frame(width: 18)
+                .font(.system(size: 17))
+                .frame(width: 24)
             Slider(value: Binding(get: { value }, set: set), in: 0...100)
+                .controlSize(.large)
+                .frame(minHeight: 34)
                 .accessibilityLabel(name)
             Text("\(Int(value.rounded()))%")
-                .font(.caption.monospacedDigit())
-                .frame(width: 38, alignment: .trailing)
+                .font(.system(size: 15, weight: .medium, design: .monospaced))
+                .frame(width: 50, alignment: .trailing)
         }
     }
 }

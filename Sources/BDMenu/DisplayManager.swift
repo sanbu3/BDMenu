@@ -47,13 +47,22 @@ final class DisplayManager {
     var lastError: String?
     var isApplying = false
     var autoWorkflow = UserDefaults.standard.bool(forKey: "autoWorkflow")
+    var preferPasswordWhenBuiltinOff = UserDefaults.standard.object(forKey: "preferPasswordWhenBuiltinOff") as? Bool ?? true
+    let passwordPreference = PasswordPreferenceController()
     var syncKeyboardBacklight = UserDefaults.standard.object(forKey: "syncKeyboardBacklight") as? Bool ?? true
-    var followPointerEnabled = UserDefaults.standard.bool(forKey: "followPointer")
+    var keyboardEnabled = UserDefaults.standard.object(forKey: "brightnessKeyboardEnabled") as? Bool ?? true
+    var brightnessTarget = BrightnessTarget(rawValue: UserDefaults.standard.string(forKey: "brightnessTarget") ?? "") ?? .focusedWindow
+    var decreaseShortcut = DisplayManager.loadShortcut("brightnessDecrease") ?? .defaultDecrease
+    var increaseShortcut = DisplayManager.loadShortcut("brightnessIncrease") ?? .defaultIncrease
+    var nativeBrightnessKeys = UserDefaults.standard.object(forKey: "nativeBrightnessKeys") as? Bool ?? true
+    var recordingAction: BrightnessAction?
+    var shortcutMessage: String?
     var keysTrusted = false
     var keysInstalled = false
     var loginStatus = SMAppService.mainApp.status
 
     @ObservationIgnored private let keys = BrightnessKeys()
+    @ObservationIgnored private let focusResolver = FocusedDisplayResolver()
     @ObservationIgnored private let keyboardBacklight = KeyboardBacklightController()
     @ObservationIgnored private var started = false
     @ObservationIgnored private var changeTask: Task<Void, Never>?
@@ -102,6 +111,7 @@ final class DisplayManager {
                                                                                      object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshPermission(); self?.scheduleRefresh(reprobe: true) }
         })
+        keys.onRecord = { [weak self] shortcut in self?.finishRecording(shortcut) }
         keys.onAdjust = { [weak self] delta, fine in self?.handleBrightnessKey(delta: delta, fine: fine) ?? false }
         refreshPermission()
         monitorPermissionIfNeeded()
@@ -118,6 +128,8 @@ final class DisplayManager {
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         observers.removeAll(); workspaceObservers.removeAll()
         keys.uninstall()
+        passwordPreference.stop()
+        recordingAction = nil
         for id in Array(originalGamma.keys) { restoreGamma(id) }
         if changedBuiltinForWorkflow, let id = knownBuiltinID {
             if PrivateAPI.setDisplayEnabled(id: id, enabled: true) {
@@ -126,6 +138,19 @@ final class DisplayManager {
             }
         }
         hud?.orderOut(nil)
+    }
+
+    func setPreferPasswordWhenBuiltinOff(_ enabled: Bool) {
+        preferPasswordWhenBuiltinOff = enabled
+        UserDefaults.standard.set(enabled, forKey: "preferPasswordWhenBuiltinOff")
+        synchronizePasswordPreference()
+        if enabled && !BrightnessKeys.isTrusted() { requestPermission() }
+    }
+
+    private func synchronizePasswordPreference() {
+        let id = builtin?.id ?? knownBuiltinID
+        let disabledID = id.flatMap { CGDisplayIsActive($0) == 0 && externalOnline ? $0 : nil }
+        passwordPreference.update(enabled: started && preferPasswordWhenBuiltinOff, disabledBuiltinID: disabledID)
     }
 
     func setSyncKeyboardBacklight(_ enabled: Bool) {
@@ -192,23 +217,107 @@ final class DisplayManager {
         }
     }
 
-    func setFollowPointer(_ enabled: Bool) {
-        followPointerEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "followPointer")
-        if enabled && !BrightnessKeys.isTrusted() { BrightnessKeys.requestAccess() }
-        refreshPermission()
-        monitorPermissionIfNeeded()
+    private static func loadShortcut(_ key: String, defaults: UserDefaults = .standard) -> BrightnessShortcut? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(BrightnessShortcut.self, from: data)
     }
+
+    func setKeyboardEnabled(_ on: Bool) {
+        keyboardEnabled = on
+        UserDefaults.standard.set(on, forKey: "brightnessKeyboardEnabled")
+        if on && !BrightnessKeys.isTrusted() { _ = BrightnessKeys.requestAccess() }
+        refreshPermission(); monitorPermissionIfNeeded()
+    }
+
+    func setBrightnessTarget(_ target: BrightnessTarget) {
+        brightnessTarget = target
+        UserDefaults.standard.set(target.rawValue, forKey: "brightnessTarget")
+    }
+
+    func setNativeBrightnessKeys(_ on: Bool) {
+        nativeBrightnessKeys = on
+        UserDefaults.standard.set(on, forKey: "nativeBrightnessKeys")
+        refreshPermission(); monitorPermissionIfNeeded()
+    }
+
+    func requestKeyboardAccess() { requestPermission() }
+
+    func beginRecording(_ action: BrightnessAction) {
+        shortcutMessage = nil
+        guard BrightnessKeys.isTrusted() else {
+            shortcutMessage = "请先授予 BDMenu 辅助功能权限，再录制按键。"
+            requestKeyboardAccess()
+            return
+        }
+        recordingAction = action
+        refreshPermission(); monitorPermissionIfNeeded()
+        if !keysInstalled {
+            recordingAction = nil
+            shortcutMessage = "按键监听启动失败，请检查权限并重新打开 BDMenu。"
+        }
+    }
+
+    func cancelRecording() {
+        recordingAction = nil
+        keys.recording = nil
+        refreshPermission(); monitorPermissionIfNeeded()
+    }
+
+    private func finishRecording(_ shortcut: BrightnessShortcut?) {
+        guard let action = recordingAction else { return }
+        guard let shortcut else { cancelRecording(); return }
+        guard shortcut.isAllowed else {
+            shortcutMessage = "普通字符键请搭配 ⌘、⌃ 或 ⌥，也可以直接使用 F 键或媒体键。"
+            return
+        }
+        let other = action == .decrease ? increaseShortcut : decreaseShortcut
+        guard !shortcut.hasSameBinding(as: other) else {
+            shortcutMessage = "提高和降低亮度需要使用不同按键，请再按一个键。"
+            return
+        }
+        // Fine-step combinations must not overlap a second explicit binding.
+        let overlaps = other.match(kind: shortcut.kind, code: shortcut.code, flags: CGEventFlags(rawValue: shortcut.modifiers)) != nil
+            || shortcut.match(kind: other.kind, code: other.code, flags: CGEventFlags(rawValue: other.modifiers)) != nil
+        guard !overlaps else {
+            shortcutMessage = "这组按键与另一按键的精细调节组合冲突，请换一个。"
+            return
+        }
+        if action == .decrease { decreaseShortcut = shortcut } else { increaseShortcut = shortcut }
+        persistShortcuts()
+        shortcutMessage = "已将“\(action.title)”绑定到 \(shortcut.label)。"
+        cancelRecording()
+    }
+
+    func resetShortcuts() {
+        decreaseShortcut = .defaultDecrease
+        increaseShortcut = .defaultIncrease
+        persistShortcuts()
+        shortcutMessage = "已恢复 F4 降低、F5 提高亮度。"
+        cancelRecording()
+    }
+
+    private func persistShortcuts() {
+        let defaults = UserDefaults.standard
+        defaults.set(try? JSONEncoder().encode(decreaseShortcut), forKey: "brightnessDecrease")
+        defaults.set(try? JSONEncoder().encode(increaseShortcut), forKey: "brightnessIncrease")
+    }
+
     func requestPermission() {
-        BrightnessKeys.requestAccess()
-        BrightnessKeys.openSettings()
+        _ = BrightnessKeys.requestAccess()
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") { NSWorkspace.shared.open(url) }
         refreshPermission()
         monitorPermissionIfNeeded()
     }
     func refreshPermission() {
         keysTrusted = BrightnessKeys.isTrusted()
-        if followPointerEnabled && keysTrusted {
-            keysInstalled = keys.install()
+        keys.enabled = keyboardEnabled
+        keys.decrease = decreaseShortcut
+        keys.increase = increaseShortcut
+        keys.nativeKeysEnabled = nativeBrightnessKeys
+        keys.recording = recordingAction
+        if (keyboardEnabled || recordingAction != nil) && keysTrusted {
+            keys.install()
+            keysInstalled = keys.installed
         } else {
             keys.uninstall()
             keysInstalled = false
@@ -216,7 +325,7 @@ final class DisplayManager {
     }
     private func monitorPermissionIfNeeded() {
         permissionTask?.cancel()
-        guard followPointerEnabled else { return }
+        guard keyboardEnabled || recordingAction != nil else { return }
         // Independent of the menu view: granting or revoking access works with the panel closed.
         permissionTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -298,6 +407,7 @@ final class DisplayManager {
         displays = result.sorted { a, b in a.isBuiltin != b.isBuiltin ? a.isBuiltin : a.id < b.id }
         mainID = CGMainDisplayID()
         mirrored = displays.contains { $0.enabled && CGDisplayIsInMirrorSet($0.id) != 0 }
+        synchronizePasswordPreference()
     }
 
     private func recoverBuiltinIfNeeded() {
@@ -522,6 +632,7 @@ final class DisplayManager {
                 dimKeyboardBacklight()
             }
         }
+        synchronizePasswordPreference()
         scheduleRefresh()
         return true
     }
@@ -660,14 +771,18 @@ final class DisplayManager {
     }
 
     private func handleBrightnessKey(delta: Int, fine: Bool) -> Bool {
-        let mouse = NSEvent.mouseLocation
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }),
-              let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
-        let id = number.uint32Value
-        // Native internal display handling retains Apple's HUD and automatic brightness behavior.
-        guard let display = displays.first(where: { $0.id == id && $0.enabled && !$0.isBuiltin }),
-              state(id).dimming != .unknown else { return false }
-        let value = min(100, max(0, state(id).brightness + Double(delta) * (fine ? 1.5625 : 6.25)))
+        let pointerScreen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+        let pointerID = (pointerScreen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        let id = brightnessTarget == .focusedWindow
+            ? focusResolver.focusedDisplay(in: displays) ?? pointerID : pointerID
+        guard let id,
+              let display = displays.first(where: { $0.id == id && $0.enabled }),
+              let screen = NSScreen.screens.first(where: {
+                  ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+              }), display.isBuiltin || state(id).dimming != .unknown else { return false }
+        // setBrightness already coalesces external writes off the main actor.
+        let current = display.isBuiltin ? (PrivateAPI.getBrightness(id).map { $0 * 100 } ?? state(id).brightness) : state(id).brightness
+        let value = min(100, max(0, current + Double(delta) * (fine ? 1.5625 : 6.25)))
         setBrightness(display.id, value)
         showHUD(Int(value.rounded()), screen: screen)
         return true
