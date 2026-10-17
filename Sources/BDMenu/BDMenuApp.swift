@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         InterfaceInputState.shared.start()
+        manager.appBar.openSettings = { [weak self] in self?.presentation.show(.dock) }
         manager.start()
         presentation.applyAppearance()
         configureMenus()

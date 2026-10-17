@@ -46,7 +46,7 @@ final class DisplayManager {
     var autoWorkflow = UserDefaults.standard.bool(forKey: "autoWorkflow")
     var preferPasswordWhenBuiltinOff = UserDefaults.standard.object(forKey: "preferPasswordWhenBuiltinOff") as? Bool ?? true
     let passwordPreference = PasswordPreferenceController()
-    let dock = DockController()
+    let appBar = CompanionBarController()
     let identification = DisplayIdentification()
     var syncKeyboardBacklight = UserDefaults.standard.object(forKey: "syncKeyboardBacklight") as? Bool ?? true
     var keyboardEnabled = UserDefaults.standard.object(forKey: "brightnessKeyboardEnabled") as? Bool ?? true
@@ -100,7 +100,7 @@ final class DisplayManager {
     func start() {
         guard !started else { return }
         started = true
-        dock.start()
+        appBar.start()
         CGDisplayRegisterReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
@@ -128,7 +128,7 @@ final class DisplayManager {
         observers.removeAll(); workspaceObservers.removeAll()
         keys.uninstall()
         passwordPreference.stop()
-        dock.stop()
+        appBar.stop()
         identification.stop()
         recordingAction = nil
         for id in Array(originalGamma.keys) { restoreGamma(id) }
@@ -405,7 +405,7 @@ final class DisplayManager {
         displays = result.sorted { a, b in a.isBuiltin != b.isBuiltin ? a.isBuiltin : a.id < b.id }
         mainID = CGMainDisplayID()
         mirrored = displays.contains { $0.enabled && CGDisplayIsInMirrorSet($0.id) != 0 }
-        dock.update(displays: displays, mirrored: mirrored)
+        appBar.update(displays: displays)
         synchronizePasswordPreference()
     }
 

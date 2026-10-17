@@ -31,7 +31,7 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             case .keyboard: return "把常用的亮度调节，交给你习惯的按键。"
             case .automation: return "接入外接屏以后，让桌面按你的习惯运行。"
             case .application: return "管理外观与权限，随时了解当前运行状态。"
-            case .dock: return "选择程序坞的显示方式与目标屏幕。单屏时也可保存偏好。"
+            case .dock: return "把扩展应用栏固定到任意在线屏幕，或让它跟随鼠标。"
             }
         }
     }

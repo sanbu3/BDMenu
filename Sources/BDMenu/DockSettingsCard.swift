@@ -4,87 +4,72 @@ import SwiftUI
 @MainActor
 struct DockSettingsCard: View {
     @Environment(DisplayManager.self) private var dm
-    private var dock: DockController { dm.dock }
+    private var bar: CompanionBarController { dm.appBar }
 
     var body: some View {
         BDMenuCard {
-            VStack(alignment: .leading, spacing: 16) {
-                SectionHeading(title: "Dock 显示方式", subtitle: "始终可选，单屏时保存偏好，多屏时应用。", symbol: "dock.rectangle")
-                ForEach(DockController.Mode.allCases) { mode in
-                    Button { dock.setMode(mode) } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: dock.mode == mode ? "checkmark.circle.fill" : "circle")
-                            Text(mode.title)
-                            Spacer()
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 18) {
+                SectionHeading(title: "BDMenu 扩展应用栏", subtitle: "在屏幕内部显示，支持上大下小的双屏排列。", symbol: "dock.rectangle")
+                Toggle("启用扩展应用栏", isOn: Binding(get: { bar.enabled }, set: { bar.setEnabled($0) }))
+                Text("这是 BDMenu 提供的应用栏，显示固定应用和正在运行的应用，点击即可打开或切换。系统 Dock 保持原样；不会移动指针或改变屏幕排列。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    ForEach(CompanionBarController.Mode.allCases) { mode in
+                        Button(mode.title) { bar.setMode(mode) }
+                            .buttonStyle(BDMenuCapsuleButtonStyle(prominent: bar.mode == mode))
+                            .accessibilityAddTraits(bar.mode == mode ? .isSelected : [])
                     }
-                    .buttonStyle(BDMenuCapsuleButtonStyle(prominent: dock.mode == mode))
-                    .accessibilityAddTraits(dock.mode == mode ? .isSelected : [])
-                    Text(mode == .mouse
-                         ? "鼠标到哪块屏幕的底边并继续下移，就在那里呼出。仅把鼠标移到另一块屏幕，不会自动移动 Dock。"
-                         : "先在指定屏幕底边呼出 Dock，再保护它不被其他屏幕的普通底边动作带走。")
-                        .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
                 }
+                Text(bar.mode == .fixed
+                     ? "应用栏始终留在所选屏幕底部，不需要先把系统 Dock 移过去。单屏时自动使用唯一在线屏幕。"
+                     : "鼠标进入另一块屏幕后，应用栏会随之切换，无需触碰底边。拖动或操作应用栏时暂停跟随，避免打断点击。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         BDMenuCard {
             VStack(alignment: .leading, spacing: 16) {
-                SectionHeading(title: "指定屏幕", subtitle: "点选固定目标，或在该屏幕查看底边呼出引导。", symbol: "display.2")
+                SectionHeading(title: "固定目标屏幕", subtitle: "屏幕底部与其他屏幕相连，也可以直接固定。", symbol: "display.2")
                 ForEach(dm.presentationDisplays) { display in
-                    Button { dock.setFixedUUID(display.uuid) } label: {
+                    Button { bar.setTarget(display.uuid) } label: {
                         HStack(spacing: 12) {
                             Image(systemName: display.isBuiltin ? "laptopcomputer" : "display")
                             Text(display.name).lineLimit(1)
                             Spacer()
                             Text(display.enabled ? (display.id == dm.mainID ? "主屏" : "已启用") : "已停用")
-                            if dock.fixedUUID == display.uuid { Image(systemName: "checkmark") }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                            if bar.fixedUUID == display.uuid { Image(systemName: "checkmark") }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(BDMenuCapsuleButtonStyle(prominent: dock.fixedUUID == display.uuid))
+                    .buttonStyle(BDMenuCapsuleButtonStyle(prominent: bar.fixedUUID == display.uuid))
                     .disabled(!display.enabled)
-                    .accessibilityAddTraits(dock.fixedUUID == display.uuid ? .isSelected : [])
+                    .accessibilityAddTraits(bar.fixedUUID == display.uuid ? .isSelected : [])
                 }
-                if let target = dock.target {
-                    Text("已选：\(target.name)\(dock.mode == .mouse ? " · 当前为底边跟随，尚未启用固定保护。" : "")")
-                        .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                } else if !dock.fixedUUID.isEmpty {
-                    Text("之前指定的屏幕当前未启用。可选择其他在线屏幕，或启用原屏幕后继续使用。")
+                if bar.mode == .mouse {
+                    Text("当前跟随鼠标；这里的选择为下次切回固定模式保留。")
                         .font(BDMenuStyle.detail).foregroundStyle(.secondary)
                 }
                 HStack {
-                    Button("所选屏幕呼出引导") {
-                        guard let target = dock.target else { return }
-                        dm.identification.show(displays: dm.presentationDisplays, guiding: target.id)
-                    }
-                    .disabled(!dock.canGuideTarget || dock.mirrored)
+                    Button("显示应用栏") { bar.reveal() }.disabled(!bar.enabled)
                     Button("识别全部屏幕") { dm.identification.show(displays: dm.presentationDisplays) }
-                        .disabled(dock.screens.isEmpty)
                     Spacer()
                 }
-                Text("引导会标出目标位置，随后由你移到该屏幕底边呼出；不会跳动指针。已停用的屏幕不能显示 Dock，需先在“显示器”中启用。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(bar.status).font(BDMenuStyle.body).fixedSize(horizontal: false, vertical: true)
+                if let error = bar.lastError { ErrorNotice(message: error) }
             }
         }
         BDMenuCard {
             VStack(alignment: .leading, spacing: 16) {
-                SectionHeading(title: "当前运行状态", subtitle: "\(dock.screens.count) 块屏幕已启用", symbol: "info.circle")
-                if let name = dock.currentDisplayName { StatusPill(title: "检测到 Dock：\(name)", color: .secondary) }
-                Text(dock.status).font(BDMenuStyle.body).fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button("重新检测") { dm.scheduleRefresh(); dock.refresh() }
-                    Button("系统 Dock 设置…") {
-                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Desktop-Settings.extension")!)
-                    }
-                    if dock.mode == .fixed && !dm.keysTrusted { Button("打开权限设置…") { dm.requestPermission() } }
-                    Spacer()
-                }
-                Text("固定保护适用于底部 Dock。拖动、边角、跨屏通道和系统唤醒仍可能改变 Dock 所在屏幕，可在目标底边再次呼出。不会改变主屏、排列或系统自动隐藏偏好。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                SectionHeading(title: "显示与内容", subtitle: "这些设置只影响扩展应用栏。", symbol: "slider.horizontal.3")
+                Toggle("自动隐藏扩展应用栏", isOn: Binding(get: { bar.autoHide }, set: { bar.setAutoHide($0) }))
+                Text("开启后，将鼠标移到应用栏所在位置附近即可显示。触发区域位于当前屏幕内，不需要穿过上下屏幕的接缝。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Toggle("显示系统 Dock 中固定的应用", isOn: Binding(get: { bar.includePinned }, set: { bar.setIncludePinned($0) }))
+                Text("同时显示正在运行的普通应用；不包含文件夹、废纸篓、窗口预览和系统 Dock 的完整拖放功能。应用较多时可横向滚动。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Divider()
+                Text("原生 Dock 与上下布局") .font(BDMenuStyle.section)
+                Text("上方外置屏底部连接着下方内建屏时，原生 Dock 的底边呼出可能无法在上方生效。旧版“固定”只有底边拦截，并不能搬移系统 Dock；本版已停用该拦截，改用可直接定位的扩展应用栏。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }

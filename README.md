@@ -2,9 +2,9 @@
 
 **用罗技 F4 / F5 调节当前窗口所在屏幕的亮度，让外接显示器工作流更顺手。**
 
-BDMenu 是面向 Apple Silicon Mac 的免费开源菜单栏显示器管理器，使用 SwiftUI + AppKit 构建。它集中管理内建屏与外置屏亮度、显示器启停、分辨率、输入源、镜像、主屏及多屏 Dock，并提供外接屏接入／断开的自动工作流。
+BDMenu 是面向 Apple Silicon Mac 的免费开源菜单栏显示器管理器，使用 SwiftUI + AppKit 构建。它集中管理内建屏与外置屏亮度、显示器启停、分辨率、输入源、镜像、主屏及多屏扩展应用栏，并提供外接屏接入／断开的自动工作流。
 
-**English:** BDMenu is an open-source macOS menu bar display manager for Apple Silicon. Control the focused monitor's brightness with customizable Logitech F4/F5 shortcuts, DDC/CI hardware control or gamma dimming. Includes built-in display automation, display identification, resolution switching and multi-monitor Dock controls.
+**English:** BDMenu is an open-source macOS menu bar display manager for Apple Silicon. Control the focused monitor's brightness with customizable Logitech F4/F5 shortcuts, DDC/CI hardware control or gamma dimming. Includes built-in display automation, display identification, resolution switching and an independent Dock companion with fixed-screen and pointer-follow modes, including vertically stacked displays.
 
 ## 亮点与典型场景
 
@@ -15,12 +15,12 @@ BDMenu 是面向 Apple Silicon Mac 的免费开源菜单栏显示器管理器，
 | 显示器支持 DDC/CI | 调节硬件背光；检测不可用时提供 gamma 软件调光，并明确显示状态 |
 | 外接屏办公，希望关闭内建屏 | 自动工作流管理内建屏、主屏、亮度和按连接组合记忆的布局 |
 | 内建屏关闭，不方便触摸 Touch ID | 自动选择受支持系统授权窗口的密码入口并聚焦输入框；内建屏可用且指纹可用时优先 Touch ID |
-| 多块屏幕，Dock 容易跑错位置 | 原生底边呼出，或选择目标屏幕开启底部 Dock 固定保护；提供定位引导 |
+| 外置屏在上、MacBook 在下，底边呼出会跑到下屏 | 直接把 BDMenu 扩展应用栏固定在上方外置屏内部，或让它跟随鼠标所在屏幕 |
 | 分不清屏幕名称 | 在所有在线屏幕上显示编号与名称，再选择管理目标 |
 
-密码入口辅助不读取或输入密码，也不提交授权；无法全局强制所有系统／第三方验证窗口。Dock 固定保护适用于多块同时启用的非镜像屏幕，保留拖动、边角和跨屏通道，并非系统级绝对锁定。详见下方说明与 [Dock 使用说明](docs/DOCK.md)。
+密码入口辅助不读取或输入密码，也不提交授权；无法全局强制所有系统／第三方验证窗口。扩展应用栏是独立的应用启动／切换栏，不搬移原生 Dock，也不改变屏幕排列或鼠标位置。详见下方说明与 [Dock 使用说明](docs/DOCK.md)。
 
-界面采用较大的文字、开关、胶囊按钮和自定义圆角窗体，支持浅色、深色及跟随系统。应用只管理显示器，不接管音量或扬声器。
+界面采用较大的文字、开关、胶囊按钮和自定义圆角窗体，支持浅色、深色及跟随系统。应用不接管音量或扬声器。
 
 ![BDMenu macOS focused-display brightness HUD without percentages](docs/images/brightness-hud.png)
 
@@ -29,13 +29,14 @@ BDMenu 是面向 Apple Silicon Mac 的免费开源菜单栏显示器管理器，
 1. 按下方步骤构建并安装，首次使用允许“辅助功能”权限。
 2. 在“快捷键”中确认 F4 / F5，或录制键盘实际发送的按键。
 3. 选中目标屏幕上的窗口，使用亮度键；按住 Shift 可精细调整。
-4. 在“显示器”中识别屏幕、切换显示模式；在独立的“Dock”页（⌘5）选择跟随方式与固定目标。单屏也可预设，多屏启用时应用。
+4. 在“显示器”中识别屏幕、切换显示模式；在独立的“Dock”页（⌘5）启用扩展应用栏，选择固定屏幕或跟随鼠标。支持单屏、左右与上下排列。
 
-**检索关键词 / Search terms:** macOS display manager · external monitor brightness · focused display · DDC/CI · software dimming · Logitech F4 F5 · multi-monitor Dock · Touch ID password fallback · Apple Silicon · SwiftUI · 外接显示器亮度 · 罗技键盘 · 多屏管理。
+**检索关键词 / Search terms:** macOS display manager · external monitor brightness · focused display · DDC/CI · software dimming · Logitech F4 F5 · multi-monitor Dock companion · stacked displays · app launcher · Touch ID password fallback · Apple Silicon · SwiftUI · 外接显示器亮度 · 罗技键盘 · 多屏管理。
 
 ## 功能
 
 - **快捷面板**：左击菜单栏图标快速调节亮度、启停屏幕和全部点亮，在线主屏优先显示；右击打开控制中心、快捷键或退出。
+- **多屏扩展应用栏**：固定到指定在线屏幕，或随鼠标跨屏切换；支持上大下小布局。同步系统 Dock 固定的应用及正在运行的应用，点击打开／切换，支持自动隐藏、横向滚动和栏内快捷菜单。不需要先在目标屏幕呼出原生 Dock。
 - **控制中心**：显示器、快捷键、自动化、应用与权限、Dock 五个页面，支持 ⌘1–⌘5 导航。关闭窗口后继续在菜单栏运行，重新打开应用可找回窗口。
 - **开关任意显示器**:通过 SkyLight 关闭/重新启用显示器；保留至少一块在线实体屏，实际支持取决于 macOS
 - **亮度**:
@@ -78,6 +79,18 @@ CODE_SIGN_IDENTITY='你的证书 SHA-1' ./build.sh
 **从旧版本升级**：安装完成后，在系统设置 → 隐私与安全性 → 辅助功能中移除旧 BDMenu，重新添加并允许 `/Applications/BDMenu.app`。面板会自动更新授权状态，必要时退出并重新启动。签名身份兼容且 Bundle ID 不变时通常可延续授权，但不能保证永久有效。
 
 登录时启动：在面板中打开开关；需要审批时会进入系统登录项设置。
+
+## 2.3 支持上下排列的扩展应用栏
+
+- 改用独立的 **BDMenu 扩展应用栏（Dock companion）**：直接在目标屏幕内部显示，解决上方外置屏底边连着下方 MacBook、无法正常召唤系统 Dock 的场景。
+- 支持固定屏幕和实际的鼠标跨屏跟随，拖动／操作栏期间暂停跟随；不移动鼠标，不改主屏或屏幕排列。
+- 读取系统 Dock 的固定应用，并合并正在运行的普通应用；点击打开／切换，显示运行和当前应用指示，右键可在访达中显示。
+- 支持自动隐藏、横向滚动；栏内设置按钮可打开设置，右键可快速切换跟随／固定目标或关闭扩展栏。
+- 单屏自动使用唯一在线屏幕；多屏固定目标失联时暂停，不猜测替代目标，目标重连后恢复。使用公开 AppKit / NSWorkspace 能力，扩展栏本身不需要辅助功能授权。
+- 移除 2.2 / 2.2.1 的原生 Dock 鼠标底边拦截。之前的方式只能防止部分误触，不能把原生 Dock 迁回指定屏幕，也不适合共享底边的上下布局。
+- 这不是系统 Dock 的完整复制：不含废纸篓、文件夹堆栈、窗口预览和完整拖放管理；不隐藏或修改系统 Dock。说明见 [docs/DOCK.md](docs/DOCK.md)。
+
+以下 2.2 / 2.2.1 Dock 内容为历史记录；当前版本已采用上面的扩展应用栏。
 
 ## 2.2.1 Dock 独立设置与单屏偏好
 
@@ -167,7 +180,7 @@ Dock 说明见 [docs/DOCK.md](docs/DOCK.md)。
 | 热插拔检测 | `CGDisplayRegisterReconfigurationCallback` |
 | 焦点屏幕亮度快捷键 | 辅助功能窗口几何 + CGEvent 按键监听；按显示器 UUID 独立控制 |
 | 系统验证入口辅助 | Apple 系统认证服务／系统设置授权表单的明确方法按钮；确认页面转换后聚焦安全输入框 |
-| Dock 固定保护 | 底边鼠标事件保护；UUID 目标绑定、镜像／单屏／断连时暂停 |
+| 多屏扩展应用栏 | 透明 NSPanel + SwiftUI；NSScreen 定位，NSWorkspace 启动／激活；独立的 UUID 固定与鼠标跟随策略 |
 
 ## 借鉴的开源项目
 
