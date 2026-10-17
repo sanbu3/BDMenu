@@ -788,13 +788,16 @@ final class DisplayManager {
         return true
     }
     private func showHUD(_ value: Int, screen: NSScreen) {
-        let size = NSSize(width: 170, height: 58)
+        let size = NSSize(width: 236, height: 76)
         if hud == nil {
             let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.level = .statusBar; panel.isOpaque = false; panel.backgroundColor = .clear
             panel.hasShadow = false; panel.ignoresMouseEvents = true; panel.hidesOnDeactivate = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            panel.contentView = NSHostingView(rootView: HUDView(value: value))
+            let hosting = NSHostingView(rootView: HUDView(value: value))
+            hosting.wantsLayer = true
+            hosting.layer?.backgroundColor = NSColor.clear.cgColor
+            panel.contentView = hosting
             hud = panel
         }
         (hud?.contentView as? NSHostingView<HUDView>)?.rootView = HUDView(value: value)
