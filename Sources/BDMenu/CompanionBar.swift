@@ -50,6 +50,10 @@ struct CompanionApp: Identifiable {
     let icon: NSImage
     let running: Bool
     let frontmost: Bool
+    let hidden: Bool
+    let pinned: Bool
+    let nativePresent: Bool
+    let bundleIdentifier: String?
     var id: String { url.standardizedFileURL.path }
 }
 
@@ -62,13 +66,14 @@ final class CompanionBarController {
         ?? UserDefaults.standard.string(forKey: "dockFixedUUID") ?? ""
     private(set) var autoHide = UserDefaults.standard.bool(forKey: "companionBarAutoHide")
     private(set) var includePinned = UserDefaults.standard.object(forKey: "companionBarIncludePinned") as? Bool ?? true
+    private(set) var clickToHide = UserDefaults.standard.object(forKey: "companionBarClickToHide") as? Bool ?? true
+    private(set) var nativeMenuMessage: String?
     private(set) var screens: [CompanionScreen] = []
     private(set) var apps: [CompanionApp] = []
     private(set) var activeScreenName: String?
     private(set) var status = "扩展应用栏未启用。"
     private(set) var lastError: String?
     @ObservationIgnored var openSettings: (() -> Void)?
-    @ObservationIgnored var onEnabledChanged: ((Bool) -> Void)?
     @ObservationIgnored private var panel: CompanionPanel?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -77,6 +82,10 @@ final class CompanionBarController {
     @ObservationIgnored private var candidateSince = Date.distantPast
     @ObservationIgnored private var lastInside = Date.distantPast
     @ObservationIgnored private var lastAppsRefresh = Date.distantPast
+    @ObservationIgnored private let nativeMenu = NativeDockMenu()
+    @ObservationIgnored private var nativeMenuTask: Task<Void, Never>?
+    @ObservationIgnored private var localPins = UserDefaults.standard.stringArray(forKey: "companionBarLocalPins") ?? []
+    @ObservationIgnored private var excludedSystemPins = Set(UserDefaults.standard.stringArray(forKey: "companionBarExcludedPins") ?? [])
 
     var target: CompanionScreen? { screens.first { $0.uuid == fixedUUID } }
 
@@ -90,7 +99,6 @@ final class CompanionBarController {
                 Task { @MainActor [weak self] in self?.refreshApps() }
             })
         }
-        onEnabledChanged?(enabled)
         refreshApps()
         task = Task { [weak self] in
             while !Task.isCancelled {
@@ -102,6 +110,7 @@ final class CompanionBarController {
     }
     func stop() {
         task?.cancel(); task = nil
+        nativeMenuTask?.cancel(); nativeMenuTask = nil; nativeMenu.cancel()
         observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }; observers.removeAll()
         panel?.orderOut(nil); panel = nil
     }
@@ -120,7 +129,7 @@ final class CompanionBarController {
     }
     func setEnabled(_ value: Bool) {
         enabled = value; UserDefaults.standard.set(value, forKey: "companionBarEnabled")
-        onEnabledChanged?(value)
+        if !value { nativeMenuTask?.cancel(); nativeMenu.cancel() }
         lastInside = Date()
         refreshApps(); refreshPosition(immediate: true)
     }
@@ -146,14 +155,22 @@ final class CompanionBarController {
         let running = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier && !$0.isTerminated
         }
-        let pinned = includePinned ? systemPinnedApps() : []
+        let native = systemPinnedApps()
+        let pinned = (includePinned ? native.filter { !excludedSystemPins.contains($0.standardizedFileURL.path) } : [])
+            + localPins.map { URL(fileURLWithPath: $0) }
+        let pinnedPaths = Set(pinned.map { $0.standardizedFileURL.path })
+        let nativePaths = Set(native.map { $0.standardizedFileURL.path })
         let urls = CompanionBarRouting.orderedURLs(pinned: pinned, running: running.compactMap(\.bundleURL))
         apps = urls.filter { FileManager.default.fileExists(atPath: $0.path) }.map { url in
             let matches = running.filter { $0.bundleURL?.standardizedFileURL.path == url.standardizedFileURL.path }
             return CompanionApp(url: url,
                 name: matches.first?.localizedName ?? FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""),
                 icon: NSWorkspace.shared.icon(forFile: url.path), running: !matches.isEmpty,
-                frontmost: matches.contains(where: \.isActive))
+                frontmost: matches.contains(where: \.isActive),
+                hidden: !matches.isEmpty && matches.allSatisfy(\.isHidden),
+                pinned: pinnedPaths.contains(url.standardizedFileURL.path),
+                nativePresent: !matches.isEmpty || nativePaths.contains(url.standardizedFileURL.path),
+                bundleIdentifier: matches.first?.bundleIdentifier ?? Bundle(url: url)?.bundleIdentifier)
         }
     }
     private func systemPinnedApps() -> [URL] {
@@ -165,12 +182,85 @@ final class CompanionBarController {
             return url
         }
     }
+    func setClickToHide(_ value: Bool) {
+        clickToHide = value; UserDefaults.standard.set(value, forKey: "companionBarClickToHide")
+    }
+    private func runningApps(for app: CompanionApp) -> [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications.filter {
+            !$0.isTerminated && $0.bundleURL.map { CompanionAppAction.matchingPath($0, app.url) } == true
+        }
+    }
     func activate(_ app: CompanionApp) {
+        let running = runningApps(for: app)
+        let action = CompanionAppAction.primary(running: !running.isEmpty,
+            hidden: !running.isEmpty && running.allSatisfy(\.isHidden), active: running.contains(where: \.isActive), toggleEnabled: clickToHide)
+        switch action {
+        case .hide: setHidden(app, true)
+        case .reveal: setHidden(app, false)
+        case .open: open(app)
+        }
+    }
+    func open(_ app: CompanionApp) {
         lastError = nil
         let config = NSWorkspace.OpenConfiguration(); config.activates = true
         NSWorkspace.shared.openApplication(at: app.url, configuration: config) { [weak self] _, error in
             guard let error else { return }
             Task { @MainActor [weak self] in self?.lastError = "无法打开\(app.name)：\(error.localizedDescription)" }
+        }
+    }
+    func setHidden(_ app: CompanionApp, _ hidden: Bool) {
+        lastError = nil
+        let running = runningApps(for: app)
+        guard !running.isEmpty else { if !hidden { open(app) }; return }
+        for application in running {
+            if hidden {
+                if !application.hide() { lastError = "系统未允许隐藏\(app.name)。" }
+            } else {
+                _ = application.unhide()
+                _ = application.activate(options: [.activateAllWindows])
+            }
+        }
+        refreshApps()
+    }
+    func showWindows(_ app: CompanionApp) {
+        setHidden(app, false)
+        open(app)
+    }
+    func quit(_ app: CompanionApp) {
+        guard CompanionAppAction.mayQuit(bundleIdentifier: app.bundleIdentifier) else { return }
+        lastError = nil
+        for application in runningApps(for: app) {
+            if !application.terminate() { lastError = "已请求退出\(app.name)，请到应用中完成保存或确认。" }
+        }
+    }
+    func setPinned(_ app: CompanionApp, _ value: Bool) {
+        let path = app.url.standardizedFileURL.path
+        localPins.removeAll { $0 == path }
+        if value {
+            excludedSystemPins.remove(path)
+            if !includePinned || !systemPinnedApps().contains(where: { CompanionAppAction.matchingPath($0, app.url) }) {
+                localPins.append(path)
+            }
+        } else { excludedSystemPins.insert(path) }
+        UserDefaults.standard.set(localPins, forKey: "companionBarLocalPins")
+        UserDefaults.standard.set(Array(excludedSystemPins).sorted(), forKey: "companionBarExcludedPins")
+        refreshApps()
+    }
+    func showNativeMenu(_ app: CompanionApp) {
+        nativeMenuTask?.cancel(); nativeMenu.cancel()
+        nativeMenuMessage = "正在请求系统 Dock 菜单。菜单将出现在系统 Dock 所在位置。"
+        nativeMenuTask = Task { [weak self] in
+            // Let the companion's own context menu finish closing first.
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            let result = await self.nativeMenu.show(for: app.url)
+            guard !Task.isCancelled else { return }
+            switch result {
+            case .shown: self.nativeMenuMessage = "系统 Dock 原生菜单已打开，位置由系统 Dock 决定。"
+            case .permissionRequired: self.nativeMenuMessage = "调用系统菜单需要辅助功能权限，请在“应用与权限”中允许。"
+            case .itemMissing: self.nativeMenuMessage = "未找到该应用的系统 Dock 图标。请先打开应用，或直接在系统 Dock 中操作。"
+            case .unavailable: self.nativeMenuMessage = "未能确认原生菜单已打开，请直接在系统 Dock 中操作。"
+            }
         }
     }
     private func refreshPosition(immediate: Bool = false) {
@@ -278,10 +368,23 @@ private struct CompanionAppButton: View {
         .buttonStyle(.plain).focusEffectDisabled().focused($focused)
         .onHover { hovered = $0 }.help(app.name)
         .accessibilityLabel(app.name + (app.running ? "，正在运行" : "，打开应用"))
-        .accessibilityValue(app.frontmost ? "当前应用" : (app.running ? "运行中" : "未运行"))
+        .accessibilityValue(app.hidden ? "已隐藏" : (app.frontmost ? "当前应用" : (app.running ? "运行中" : "未运行")))
         .contextMenu {
-            Button("打开或切换到\(app.name)") { controller.activate(app) }
+            Button("打开") { controller.open(app) }
+            if app.running {
+                Button("显示应用窗口") { controller.showWindows(app) }
+                Button(app.hidden ? "显示" : "隐藏") { controller.setHidden(app, !app.hidden) }
+            }
+            Divider()
+            Toggle("保留在扩展栏", isOn: Binding(get: { app.pinned }, set: { controller.setPinned(app, $0) }))
             Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([app.url]) }
+            Button("系统 Dock 原生菜单…") { controller.showNativeMenu(app) }
+                .disabled(!app.nativePresent)
+                .help("显示在系统 Dock 所在位置，需要辅助功能权限。")
+            if app.running && CompanionAppAction.mayQuit(bundleIdentifier: app.bundleIdentifier) {
+                Divider()
+                Button("退出") { controller.quit(app) }
+            }
         }
     }
 }

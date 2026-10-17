@@ -60,12 +60,20 @@ struct DockSettingsCard: View {
         BDMenuCard {
             VStack(alignment: .leading, spacing: 16) {
                 SectionHeading(title: "显示与内容", subtitle: "这些设置只影响扩展应用栏。", symbol: "slider.horizontal.3")
+                Toggle("点击当前应用时隐藏，再次点击恢复", isOn: Binding(get: { bar.clickToHide }, set: { bar.setClickToHide($0) }))
+                Text("仅左键点击前台可见应用时隐藏；后台应用点击切换到前台，隐藏的应用点击恢复。右键“打开”始终执行打开。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Toggle("自动隐藏扩展应用栏", isOn: Binding(get: { bar.autoHide }, set: { bar.setAutoHide($0) }))
                 Text("开启后，将鼠标移到应用栏所在位置附近即可显示。触发区域位于当前屏幕内，不需要穿过上下屏幕的接缝。")
                     .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Toggle("显示系统 Dock 中固定的应用", isOn: Binding(get: { bar.includePinned }, set: { bar.setIncludePinned($0) }))
                 Text("同时显示正在运行的普通应用；不包含文件夹、废纸篓、窗口预览和系统 Dock 的完整拖放功能。应用较多时可横向滚动。")
                     .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("应用右键可打开、显示应用窗口、隐藏／显示、保留在扩展栏、在访达中显示和正常退出。应用特有的完整菜单可通过“系统 Dock 原生菜单…”调用，位置仍由系统 Dock 决定；不保证复制到扩展栏旁边。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let message = bar.nativeMenuMessage {
+                    Text(message).font(BDMenuStyle.detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 Divider()
                 Text("原生 Dock 与上下布局") .font(BDMenuStyle.section)
                 Text("上方外置屏底部连接着下方内建屏时，原生 Dock 的底边呼出可能无法在上方生效。旧版“固定”只有底边拦截，并不能搬移系统 Dock；本版已停用该拦截，改用可直接定位的扩展应用栏。")
