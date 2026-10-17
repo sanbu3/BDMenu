@@ -68,22 +68,27 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             let hosting = NSHostingController(rootView: ControlCenterView().environment(manager).environment(self))
             hosting.view.wantsLayer = true
             hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
-            let window = NSWindow(contentViewController: hosting)
-            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            let window = BDMenuWindow(contentRect: .zero, styleMask: [.borderless, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.contentViewController = hosting
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
             window.title = "BDMenu · 控制中心"
-            window.titlebarAppearsTransparent = false
             window.contentMinSize = NSSize(width: 720, height: 560)
             let available = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 900)
             window.setContentSize(NSSize(width: min(840, available.width - 60), height: min(760, available.height - 80)))
             window.isReleasedWhenClosed = false
             window.delegate = self
-            window.setFrameAutosaveName("BDMenu.ControlCenter.v2")
-            if !window.setFrameUsingName("BDMenu.ControlCenter.v2") { window.center() }
+            window.setFrameAutosaveName("BDMenu.ControlCenter.v3")
+            if !window.setFrameUsingName("BDMenu.ControlCenter.v3") { window.center() }
             self.window = window
         }
         window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
+
+    func close() { window?.performClose(nil) }
+    func minimize() { window?.miniaturize(nil) }
 
     func windowWillClose(_ notification: Notification) { manager.cancelRecording() }
 }

@@ -148,9 +148,7 @@ final class DisplayManager {
     }
 
     private func synchronizePasswordPreference() {
-        let id = builtin?.id ?? knownBuiltinID
-        let disabledID = id.flatMap { CGDisplayIsActive($0) == 0 && externalOnline ? $0 : nil }
-        passwordPreference.update(enabled: started && preferPasswordWhenBuiltinOff, disabledBuiltinID: disabledID)
+        passwordPreference.update(enabled: started && preferPasswordWhenBuiltinOff)
     }
 
     func setSyncKeyboardBacklight(_ enabled: Bool) {
@@ -787,10 +785,19 @@ final class DisplayManager {
         showHUD(Int(value.rounded()), screen: screen)
         return true
     }
-    private func showHUD(_ value: Int, screen: NSScreen) {
-        let size = NSSize(width: 236, height: 76)
+    func previewHUD() {
+        // A preview never writes to display hardware or changes keyboard focus.
+        guard let screen = NSApplication.shared.keyWindow?.screen ?? NSScreen.main else { return }
+        let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        let value = id.map { Int(state($0).brightness.rounded()) } ?? 50
+        showHUD(value, screen: screen, duration: 6)
+    }
+
+    private func showHUD(_ value: Int, screen: NSScreen, duration: Double = 1.5) {
+        let size = HUDLayout.size
         if hud == nil {
             let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.title = "BDMenu 亮度提示"
             panel.level = .statusBar; panel.isOpaque = false; panel.backgroundColor = .clear
             panel.hasShadow = false; panel.ignoresMouseEvents = true; panel.hidesOnDeactivate = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -801,12 +808,11 @@ final class DisplayManager {
             hud = panel
         }
         (hud?.contentView as? NSHostingView<HUDView>)?.rootView = HUDView(value: value)
-        hud?.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.minY + screen.frame.height * 0.2,
-                            width: size.width, height: size.height), display: true)
+        hud?.setFrame(HUDLayout.frame(screen: screen.frame, visible: screen.visibleFrame, scale: screen.backingScaleFactor), display: true)
         hud?.orderFrontRegardless()
         hudHideTask?.cancel()
         hudHideTask = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            do { try await Task.sleep(for: .seconds(duration)) } catch { return }
             self?.hud?.orderOut(nil)
         }
     }

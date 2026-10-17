@@ -10,14 +10,21 @@ struct ControlCenterView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(spacing: 14) {
-                    Image(nsImage: NSApplication.shared.applicationIconImage)
-                        .resizable().frame(width: 46, height: 46)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("BDMenu").font(.system(size: 24, weight: .semibold))
-                        Text("让每块屏幕，都刚刚好。")
-                            .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        WindowActionButton(symbol: "xmark", label: "关闭控制中心", action: presentation.close)
+                        WindowActionButton(symbol: "minus", label: "最小化", action: presentation.minimize)
                     }
-                    Spacer()
+                    HStack(spacing: 12) {
+                        Image(nsImage: NSApplication.shared.applicationIconImage)
+                            .resizable().frame(width: 46, height: 46)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("BDMenu").font(.system(size: 24, weight: .semibold))
+                            Text("让每块屏幕，都刚刚好。")
+                                .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .overlay(WindowDragRegion().accessibilityHidden(true))
                     Button { presentation.showQuickControls?() } label: {
                         Label("快捷面板", systemImage: "menubar.rectangle")
                     }
@@ -73,6 +80,11 @@ struct ControlCenterView: View {
                 Spacer()
                 if dm.isApplying { ProgressView().controlSize(.small); Text("正在应用…") }
                 else { Text("设置自动保存").foregroundStyle(.secondary) }
+                Image(systemName: "line.3.horizontal.decrease")
+                    .font(.system(size: 12)).rotationEffect(.degrees(-45))
+                    .foregroundStyle(.tertiary).frame(width: 24, height: 24)
+                    .overlay(WindowResizeHandle().accessibilityHidden(true))
+                    .help("拖动调整窗口大小")
             }
             .font(.system(size: 12))
             .padding(.horizontal, 28)
@@ -84,7 +96,10 @@ struct ControlCenterView: View {
         .buttonStyle(BDMenuCapsuleButtonStyle())
         .controlSize(.large)
         .frame(minWidth: 720, minHeight: 560)
-        .background(BDMenuBackground())
+        .background(BDMenuBackground(windowSurface: true))
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1).allowsHitTesting(false))
         .onExitCommand { dm.cancelRecording() }
         .onChange(of: presentation.page) { _, _ in dm.cancelRecording() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in dm.cancelRecording() }
@@ -159,17 +174,17 @@ private struct AutomationPage: View {
         }
         BDMenuCard {
             VStack(alignment: .leading, spacing: 16) {
-                SectionHeading(title: "用外接键盘输入密码", subtitle: "内建屏关闭时，减少触摸指纹感应器的需要。", symbol: "key.horizontal")
-                Toggle("优先切换到密码验证", isOn: Binding(get: { dm.preferPasswordWhenBuiltinOff }, set: { dm.setPreferPasswordWhenBuiltinOff($0) }))
+                SectionHeading(title: "跟随屏幕选择验证方式", subtitle: "内建屏可用时优先指纹，停用后优先密码。", symbol: "touchid")
+                Toggle("自动选择 Touch ID 或密码", isOn: Binding(get: { dm.preferPasswordWhenBuiltinOff }, set: { dm.setPreferPasswordWhenBuiltinOff($0) }))
                 Text(dm.passwordPreference.status.text)
                     .font(BDMenuStyle.detail)
-                    .foregroundStyle(dm.passwordPreference.status == .needsAccessibility || dm.passwordPreference.status == .unavailable ? .orange : .secondary)
+                    .foregroundStyle(dm.passwordPreference.status.needsAttention ? .orange : .secondary)
                 if dm.preferPasswordWhenBuiltinOff && dm.passwordPreference.status == .needsAccessibility {
                     Button("允许自动切换…") { dm.requestPermission() }
                         .buttonStyle(BDMenuCapsuleButtonStyle(prominent: true))
                 }
                 Divider()
-                Text("适用于系统设置、安装软件等提供“使用密码”入口的系统授权弹窗。它只切换输入方式，不读取或提交密码；锁屏和第三方应用不保证适用。")
+                Text("手动停用内建屏、合盖或外接屏工作流关闭内建屏，都会优先密码；重新启用内建屏后恢复优先 Touch ID。指纹不可用时仍用密码。系统设置、安装软件等授权窗口需提供相应切换入口；不会更改系统指纹设置，也不会读取或提交密码。")
                     .font(BDMenuStyle.detail).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -225,6 +240,16 @@ private struct ApplicationPage: View {
                             .buttonStyle(BDMenuCapsuleButtonStyle(prominent: presentation.appearance == appearance))
                             .accessibilityAddTraits(presentation.appearance == appearance ? .isSelected : [])
                     }
+                }
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("亮度提示").fontWeight(.medium)
+                        Text("显示在调节屏幕的下方正中，避开程序坞。")
+                            .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("预览亮度提示") { dm.previewHUD() }
                 }
                 Divider()
                 Toggle("登录时启动", isOn: Binding(get: { dm.launchAtLogin }, set: { dm.setLaunchAtLogin($0) }))

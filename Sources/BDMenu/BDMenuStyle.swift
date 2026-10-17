@@ -10,13 +10,32 @@ enum BDMenuStyle {
 }
 
 struct BDMenuBackground: View {
+    var windowSurface = false
     var body: some View {
         ZStack {
-            Rectangle().fill(.ultraThinMaterial)
+            if windowSurface { WindowMaterial() }
+            else { Rectangle().fill(.ultraThinMaterial) }
             RadialGradient(colors: [BDMenuStyle.accent.opacity(0.09), .clear],
                            center: .topTrailing, startRadius: 0, endRadius: 650)
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// Use a behind-window material for a transparent custom window. SwiftUI's
+/// within-window material alone can wash out dark text contrast over a light desktop.
+private struct WindowMaterial: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .underWindowBackground
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
     }
 }
 
