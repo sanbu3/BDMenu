@@ -66,6 +66,7 @@ struct MenuView: View {
             HStack(spacing: 10) {
                 Button("全部点亮") { dm.wakeAll() }
                     .help("恢复屏幕与亮度，同时暂停自动工作流")
+                Button("Dock 设置") { presentation.show(.dock) }
                 Spacer()
                 Button("控制中心") { presentation.show() }
                     .buttonStyle(BDMenuCapsuleButtonStyle(prominent: true))

@@ -11,7 +11,6 @@ struct DockScreen: Equatable {
 
 enum DockRoutingPolicy {
     static func target(uuid: String, screens: [DockScreen]) -> DockScreen? {
-        guard screens.count > 1 else { return nil }
         let matches = screens.filter { $0.uuid == uuid }
         return matches.count == 1 ? matches[0] : nil
     }
@@ -51,15 +50,17 @@ final class DockController {
     enum Mode: String, CaseIterable, Identifiable {
         case mouse, fixed
         var id: String { rawValue }
-        var title: String { self == .mouse ? "跟随鼠标" : "固定屏幕" }
+        var title: String { self == .mouse ? "跟随鼠标 · 底边呼出" : "固定指定屏幕" }
     }
     private(set) var mode = Mode(rawValue: UserDefaults.standard.string(forKey: "dockRoutingMode") ?? "") ?? .mouse
     private(set) var fixedUUID = UserDefaults.standard.string(forKey: "dockFixedUUID") ?? ""
     private(set) var screens: [DockScreen] = []
     private(set) var mirrored = false
-    private(set) var status = "同时启用两块屏幕后，可管理 Dock 的归属。"
+    private(set) var status = "正在检测 Dock 与在线屏幕。"
     private(set) var currentDisplayName: String?
     private(set) var installed = false
+    private(set) var separateSpaces = true
+    private(set) var orientation = "bottom"
     @ObservationIgnored private var tap: CFMachPort?
     @ObservationIgnored private var source: CFRunLoopSource?
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -88,6 +89,9 @@ final class DockController {
     }
     func setMode(_ mode: Mode) {
         self.mode = mode
+        if mode == .fixed, fixedUUID.isEmpty, let screen = screens.first(where: { $0.id == CGMainDisplayID() }) ?? screens.first {
+            setFixedUUID(screen.uuid)
+        }
         UserDefaults.standard.set(mode.rawValue, forKey: "dockRoutingMode")
         refresh()
     }
@@ -98,15 +102,25 @@ final class DockController {
     }
     func refresh() {
         currentDisplayName = observedDockScreen()?.name
-        guard multipleDisplays else { uninstall(); status = mirrored ? "镜像模式下只有一个桌面，已暂停 Dock 固定。" : "同时启用两块屏幕后，可管理 Dock 的归属。"; return }
-        guard mode == .fixed else { uninstall(); status = "移到目标屏幕底边并继续下移，即可在那里呼出 Dock。指针不会被移动。"; return }
-        guard let target else { uninstall(); status = "指定屏幕未启用或尚未选择，固定保护已暂停。"; return }
-        guard DockRoutingPolicy.hasExposedBottom(target, screens: screens) else {
-            uninstall(); status = "指定屏幕的底边被另一块屏幕完全覆盖，macOS 无法在此呼出底部 Dock。请调整屏幕排列或选择另一块屏幕。"; return
+        orientation = UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") ?? "bottom"
+        separateSpaces = !(UserDefaults(suiteName: "com.apple.spaces")?.bool(forKey: "spans-displays") ?? false)
+        guard !screens.isEmpty else { uninstall(); status = "没有可用屏幕，已暂停 Dock 管理。"; return }
+        guard !mirrored else { uninstall(); status = "镜像模式共用同一个桌面，无法分别指定 Dock；偏好已保存。"; return }
+        guard screens.count > 1 else {
+            uninstall()
+            status = "当前只启用“\(screens[0].name)”，Dock 只能在这块屏幕显示。可以预先保存多屏模式与固定目标，启用第二块屏幕后自动应用。"
+            return
         }
-        let dockPreferences = UserDefaults(suiteName: "com.apple.dock")
-        guard (dockPreferences?.string(forKey: "orientation") ?? "bottom") == "bottom" else {
-            uninstall(); status = "固定保护适用于底部 Dock。请先在系统设置中将 Dock 放在底部。"; return
+        guard orientation == "bottom" else {
+            uninstall(); status = "当前 Dock 在侧边。跨屏底边呼出与固定保护需要底部 Dock，请在系统设置中调整位置。"; return
+        }
+        guard separateSpaces else {
+            uninstall(); status = "系统未启用“显示器具有单独的空间”，Dock 无法按此方式跨屏呼出。请在桌面与程序坞设置中启用；系统可能要求注销后生效。"; return
+        }
+        guard mode == .fixed else { uninstall(); status = "跟随方式：将鼠标移到目标屏幕露出的底边，继续向下推动后，macOS 会在那里呼出 Dock。仅跨过屏幕边界不会迁移 Dock。"; return }
+        guard let target else { uninstall(); status = "指定屏幕未启用或尚未选择，固定保护已暂停。请在下方选择在线屏幕；不会自动换成其他目标。"; return }
+        guard DockRoutingPolicy.hasExposedBottom(target, screens: screens) else {
+            uninstall(); status = "指定屏幕的底边被另一块屏幕完全覆盖，无法在此呼出底部 Dock。请调整屏幕排列或选择另一块屏幕。"; return
         }
         guard AXIsProcessTrusted() else { uninstall(); status = "需要辅助功能权限，才能防止 Dock 被其他屏幕底边误触带走。"; return }
         install()

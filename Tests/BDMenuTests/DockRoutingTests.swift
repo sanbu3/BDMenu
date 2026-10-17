@@ -8,7 +8,7 @@ final class DockRoutingTests: XCTestCase {
     func testPinUsesPersistentIdentityAndPausesWhenScreenIsAbsent() {
         XCTAssertEqual(DockRoutingPolicy.target(uuid: "left", screens: [right, left])?.id, 1)
         XCTAssertNil(DockRoutingPolicy.target(uuid: "missing", screens: [left, right]))
-        XCTAssertNil(DockRoutingPolicy.target(uuid: "left", screens: [left]))
+        XCTAssertEqual(DockRoutingPolicy.target(uuid: "left", screens: [left])?.id, 1)
         XCTAssertNil(DockRoutingPolicy.target(uuid: "left", screens: [left, left]))
     }
     func testOnlyWrongScreensBottomTriggerZoneIsGuarded() {

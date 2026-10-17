@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let menu = NSMenu()
             menu.addItem(item("控制中心…", action: #selector(openCenter)))
             menu.addItem(item("快捷键…", action: #selector(openKeyboard)))
+            menu.addItem(item("Dock 设置…", action: #selector(openDock)))
             menu.addItem(.separator())
             menu.addItem(item("退出 BDMenu", action: #selector(quit)))
             if let event = NSApplication.shared.currentEvent { NSMenu.popUpContextMenu(menu, with: event, for: button) }
@@ -69,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     @objc private func openCenter() { popover?.performClose(nil); presentation.show(.displays) }
     @objc private func openKeyboard() { popover?.performClose(nil); presentation.show(.keyboard) }
+    @objc private func openDock() { popover?.performClose(nil); presentation.show(.dock) }
     @objc private func openApplication() { popover?.performClose(nil); presentation.show(.application) }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
     @objc private func selectPage(_ sender: NSMenuItem) {

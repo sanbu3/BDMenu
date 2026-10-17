@@ -63,6 +63,7 @@ struct ControlCenterView: View {
                     case .keyboard: KeyboardSettingsView()
                     case .automation: AutomationPage()
                     case .application: ApplicationPage()
+                    case .dock: DockSettingsCard()
                     }
                 }
                 .padding(.horizontal, 28)
@@ -131,7 +132,6 @@ private struct DisplaysPage: View {
             }
         }
         ForEach(dm.presentationDisplays) { DisplayCard(display: $0) }
-        DockSettingsCard()
         BDMenuCard {
             VStack(alignment: .leading, spacing: 18) {
                 SectionHeading(title: "布局与恢复", subtitle: "切换镜像，或找回暂时关闭的屏幕。", symbol: "rectangle.2.swap")
