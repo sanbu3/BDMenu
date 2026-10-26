@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Observation
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
@@ -27,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         statusItem = item
+        updateStatusAppearance()
         let popover = NSPopover()
         popover.behavior = .transient
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -52,6 +54,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) { InterfaceInputState.shared.stop(); manager.stop() }
     func popoverWillShow(_ notification: Notification) { manager.panelOpened() }
+
+    private func updateStatusAppearance() {
+        withObservationTracking {
+            // A connected but manually disabled external display is still attached.
+            let connected = manager.displays.contains { !$0.isBuiltin }
+            guard let button = statusItem?.button else { return }
+            // Dim the template symbol while keeping both mouse actions available.
+            button.appearsDisabled = !connected
+            let state = connected ? "已连接外置显示器" : "未连接外置显示器"
+            button.toolTip = "BDMenu · \(state)"
+            button.setAccessibilityLabel("BDMenu 显示器控制，\(state)")
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.updateStatusAppearance() }
+        }
+    }
 
     @objc private func toggleQuickControls() {
         guard let button = statusItem?.button, let popover else { return }
