@@ -70,14 +70,21 @@ enum PrivateAPI {
             os_log("BDMenu: CGBeginDisplayConfiguration failed")
             return false
         }
-        let r = fn(cfg, id, enabled)
-        guard r == .success else {
+        let result = fn(cfg, id, enabled)
+        guard result == .success else {
             CGCancelDisplayConfiguration(cfg)
+            os_log("BDMenu: CGSConfigureDisplayEnabled rejected id=%{public}d enabled=%{public}d -> %{public}d",
+                   id, enabled ? 1 : 0, result.rawValue)
             return false
         }
-        let complete = CGCompleteDisplayConfiguration(cfg, .forSession)
-        os_log("BDMenu: setDisplayEnabled id=%{public}d enabled=%{public}d -> %{public}d/%{public}d", id, enabled ? 1 : 0, r.rawValue, complete.rawValue)
-        return r == .success && complete == .success
+        // The private call applies the enable/disable itself. On current macOS the
+        // follow-up completion reports kCGErrorIllegalArgument (1001) for the same
+        // configuration even though the change is already live, so completion only
+        // gets logged; the caller re-reads the real display state afterwards.
+        let completion = CGCompleteDisplayConfiguration(cfg, .forSession)
+        os_log("BDMenu: setDisplayEnabled id=%{public}d enabled=%{public}d -> %{public}d/%{public}d",
+               id, enabled ? 1 : 0, result.rawValue, completion.rawValue)
+        return true
     }
 
     typealias DSGetBrightnessFn = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32

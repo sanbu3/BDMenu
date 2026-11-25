@@ -16,6 +16,9 @@ enum CompanionBarRouting {
         var id: String { rawValue }
         var title: String { self == .fixed ? "固定到指定屏幕" : "跟随鼠标所在屏幕" }
     }
+    static func needsPointerPolling(enabled: Bool, mode: Mode, autoHide: Bool) -> Bool {
+        enabled && (mode == .mouse || autoHide)
+    }
     static func target(mode: Mode, uuid: String, screens: [CompanionScreen], pointer: CGPoint,
                        currentID: CGDirectDisplayID?, interacting: Bool) -> CompanionScreen? {
         guard !screens.isEmpty else { return nil }
@@ -44,7 +47,7 @@ enum CompanionBarRouting {
     }
 }
 
-struct CompanionApp: Identifiable {
+struct CompanionApp: Identifiable, Equatable {
     let url: URL
     let name: String
     let icon: NSImage
@@ -55,6 +58,12 @@ struct CompanionApp: Identifiable {
     let nativePresent: Bool
     let bundleIdentifier: String?
     var id: String { url.standardizedFileURL.path }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.running == rhs.running
+            && lhs.frontmost == rhs.frontmost && lhs.hidden == rhs.hidden
+            && lhs.pinned == rhs.pinned && lhs.nativePresent == rhs.nativePresent
+            && lhs.bundleIdentifier == rhs.bundleIdentifier
+    }
 }
 
 @MainActor @Observable
@@ -90,7 +99,7 @@ final class CompanionBarController {
     var target: CompanionScreen? { screens.first { $0.uuid == fixedUUID } }
 
     func start() {
-        guard task == nil else { return }
+        guard observers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
                      NSWorkspace.didActivateApplicationNotification, NSWorkspace.didHideApplicationNotification,
@@ -100,6 +109,11 @@ final class CompanionBarController {
             })
         }
         refreshApps()
+        updatePolling()
+    }
+    private func updatePolling() {
+        task?.cancel(); task = nil
+        guard CompanionBarRouting.needsPointerPolling(enabled: enabled, mode: mode, autoHide: autoHide) else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
                 self?.refreshPosition()
@@ -125,16 +139,19 @@ final class CompanionBarController {
         if fixedUUID.isEmpty, let initial = screens.first(where: { $0.id == CGMainDisplayID() }) ?? screens.first {
             setTarget(initial.uuid)
         }
+        refreshApps()
         refreshPosition(immediate: true)
     }
     func setEnabled(_ value: Bool) {
         enabled = value; UserDefaults.standard.set(value, forKey: "companionBarEnabled")
         if !value { nativeMenuTask?.cancel(); nativeMenu.cancel() }
         lastInside = Date()
+        updatePolling()
         refreshApps(); refreshPosition(immediate: true)
     }
     func setMode(_ value: Mode) {
         mode = value; UserDefaults.standard.set(value.rawValue, forKey: "companionBarMode")
+        updatePolling()
         refreshPosition(immediate: true)
     }
     func setTarget(_ uuid: String) {
@@ -143,7 +160,7 @@ final class CompanionBarController {
     }
     func setAutoHide(_ value: Bool) {
         autoHide = value; UserDefaults.standard.set(value, forKey: "companionBarAutoHide")
-        lastInside = Date(); refreshPosition(immediate: true)
+        lastInside = Date(); updatePolling(); refreshPosition(immediate: true)
     }
     func setIncludePinned(_ value: Bool) {
         includePinned = value; UserDefaults.standard.set(value, forKey: "companionBarIncludePinned"); refreshApps()
@@ -161,7 +178,7 @@ final class CompanionBarController {
         let pinnedPaths = Set(pinned.map { $0.standardizedFileURL.path })
         let nativePaths = Set(native.map { $0.standardizedFileURL.path })
         let urls = CompanionBarRouting.orderedURLs(pinned: pinned, running: running.compactMap(\.bundleURL))
-        apps = urls.filter { FileManager.default.fileExists(atPath: $0.path) }.map { url in
+        let updated = urls.filter { FileManager.default.fileExists(atPath: $0.path) }.map { url in
             let matches = running.filter { $0.bundleURL?.standardizedFileURL.path == url.standardizedFileURL.path }
             return CompanionApp(url: url,
                 name: matches.first?.localizedName ?? FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: ""),
@@ -172,6 +189,8 @@ final class CompanionBarController {
                 nativePresent: !matches.isEmpty || nativePaths.contains(url.standardizedFileURL.path),
                 bundleIdentifier: matches.first?.bundleIdentifier ?? Bundle(url: url)?.bundleIdentifier)
         }
+        // Keep the observable array stable when only a periodic verification ran.
+        if apps != updated { apps = updated; refreshPosition(immediate: true) }
     }
     private func systemPinnedApps() -> [URL] {
         let tiles = UserDefaults(suiteName: "com.apple.dock")?.array(forKey: "persistent-apps") as? [[String: Any]] ?? []
@@ -264,7 +283,7 @@ final class CompanionBarController {
         }
     }
     private func refreshPosition(immediate: Bool = false) {
-        guard enabled else { panel?.orderOut(nil); activeScreenName = nil; publishStatus("扩展应用栏未启用，系统 Dock 保持原样。"); return }
+        guard enabled else { if panel?.isVisible == true { panel?.orderOut(nil) }; activeScreenName = nil; publishStatus("扩展应用栏未启用，系统 Dock 保持原样。"); return }
         let point = NSEvent.mouseLocation
         let interacting = NSEvent.pressedMouseButtons != 0 || (panel?.isVisible == true && panel?.frame.insetBy(dx: -10, dy: -10).contains(point) == true)
         guard let target = CompanionBarRouting.target(mode: mode, uuid: fixedUUID, screens: screens, pointer: point,
@@ -287,7 +306,7 @@ final class CompanionBarController {
         if trigger.contains(point) { lastInside = Date() }
         if !autoHide || trigger.contains(point) || Date().timeIntervalSince(lastInside) < 1 || panel?.isKeyWindow == true {
             if panel?.isVisible != true { panel?.orderFrontRegardless() }
-        } else { panel?.orderOut(nil) }
+        } else if panel?.isVisible == true { panel?.orderOut(nil) }
     }
     private func publishStatus(_ text: String) { if status != text { status = text } }
     private func ensurePanel() {

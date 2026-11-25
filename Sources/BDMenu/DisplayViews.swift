@@ -1,4 +1,5 @@
 import SwiftUI
+import DisplayCore
 
 struct CapsuleMenu<Content: View>: View {
     let title: String
@@ -108,8 +109,30 @@ struct DisplayCard: View {
 
     @ViewBuilder private var advancedControls: some View {
         if !state.modes.isEmpty {
-            CapsuleMenu(title: "分辨率", value: state.modes.first(where: { $0.id == state.currentMode })?.label ?? "当前模式") {
-                Picker("分辨率", selection: Binding(get: { dm.state(display.id).currentMode }, set: { number in
+            VStack(alignment: .leading, spacing: 10) {
+                Label("流畅度对照", systemImage: "speedometer").font(.headline)
+                if !state.renderDescription.isEmpty {
+                    Text(state.renderDescription).font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                }
+                if let current = state.modes.first(where: { $0.id == state.currentMode }) {
+                    Text("当前 \(current.label)").font(BDMenuStyle.detail)
+                    HStack {
+                        ForEach([60, 120], id: \.self) { hertz in
+                            Button(current.hertz == hertz ? "\(hertz) Hz · 当前" : "试用 \(hertz) Hz") {
+                                Task { await dm.setRefreshRate(display, hertz: hertz) }
+                            }
+                            .disabled(dm.isApplying || dm.mirrored || current.hertz == hertz
+                                || DisplayModePolicy.refreshMode(hertz, current: current, available: state.modes) == nil)
+                        }
+                    }
+                }
+                Text("先用 60 Hz 对照，再试 120 Hz；保持分辨率与 HiDPI 不变。高刷新率和更大的渲染尺寸可能增加图形负载，改善程度需实际对照。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                Text("HiDPI 兼顾文字清晰度；下方可单独选择尺寸。所有模式先试用 15 秒，未保留会自动恢复。")
+                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+            }
+            CapsuleMenu(title: "显示模式", value: state.modes.first(where: { $0.id == state.currentMode })?.label ?? "当前模式") {
+                Picker("显示模式", selection: Binding(get: { dm.state(display.id).currentMode }, set: { number in
                     if let mode = dm.state(display.id).modes.first(where: { $0.id == number }) {
                         Task { await dm.setMode(display, mode) }
                     }

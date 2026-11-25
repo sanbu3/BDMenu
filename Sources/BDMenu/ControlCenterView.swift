@@ -57,11 +57,12 @@ struct ControlCenterView: View {
                         Text(presentation.page.subtitle).font(BDMenuStyle.body).foregroundStyle(.secondary)
                     }
                     .padding(.bottom, 2)
+                    ModeTrialNotice()
                     if let error = dm.lastError { ErrorNotice(message: error) }
                     switch presentation.page {
                     case .displays: DisplaysPage()
                     case .keyboard: KeyboardSettingsView()
-                    case .automation: AutomationPage()
+                    case .automation: AutomationPage().disabled(dm.isApplying)
                     case .application: ApplicationPage()
                     case .dock: DockSettingsCard()
                     }
@@ -79,7 +80,8 @@ struct ControlCenterView: View {
                 Text("·").foregroundStyle(.tertiary)
                 Text("BDMenu \(dm.version)").foregroundStyle(.secondary)
                 Spacer()
-                if dm.isApplying { ProgressView().controlSize(.small); Text("正在应用…") }
+                if dm.modeTrialLabel != nil { Text("等待确认 · \(dm.modeTrialSeconds) 秒").foregroundStyle(.secondary) }
+                else if dm.isApplying { ProgressView().controlSize(.small); Text("正在应用…") }
                 else { Text("设置自动保存").foregroundStyle(.secondary) }
                 Image(systemName: "line.3.horizontal.decrease")
                     .font(.system(size: 12)).rotationEffect(.degrees(-45))

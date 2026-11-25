@@ -2,6 +2,13 @@ import XCTest
 @testable import BDMenu
 
 final class CompanionBarTests: XCTestCase {
+    func testPollingOnlyRunsForPointerDependentFeatures() {
+        XCTAssertFalse(CompanionBarRouting.needsPointerPolling(enabled: false, mode: .mouse, autoHide: true))
+        XCTAssertFalse(CompanionBarRouting.needsPointerPolling(enabled: true, mode: .fixed, autoHide: false))
+        XCTAssertTrue(CompanionBarRouting.needsPointerPolling(enabled: true, mode: .mouse, autoHide: false))
+        XCTAssertTrue(CompanionBarRouting.needsPointerPolling(enabled: true, mode: .fixed, autoHide: true))
+    }
+
     private let external = CompanionScreen(id: 1, uuid: "external", name: "External",
         frame: CGRect(x: 0, y: 0, width: 2048, height: 1152), visibleFrame: CGRect(x: 0, y: 0, width: 2048, height: 1128))
     private let builtin = CompanionScreen(id: 2, uuid: "builtin", name: "Built-in",

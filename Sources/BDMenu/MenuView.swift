@@ -33,6 +33,7 @@ struct MenuView: View {
             }
             ScrollView {
                 VStack(spacing: 12) {
+                    ModeTrialNotice()
                     if dm.displays.isEmpty {
                         ProgressView("正在检测显示器…").frame(maxWidth: .infinity, minHeight: 120)
                     }
