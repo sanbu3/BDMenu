@@ -31,6 +31,8 @@ final class DisplayManager {
         var modes: [DisplayMode] = []
         var currentMode = -1
         var renderDescription = ""
+        var colorProfiles: [DisplayColorProfile] = []
+        var colorProfile = ""
     }
     private struct Gamma {
         var red: [CGGammaValue]
@@ -38,6 +40,13 @@ final class DisplayManager {
         var blue: [CGGammaValue]
     }
 
+    var currentLayouts: [DisplayLayout] = []
+    var configurationPresets = DisplayManager.loadConfigurations("display.presets.v1")
+    var recentConfigurations = DisplayManager.loadConfigurations("display.recent.v1")
+    var restoreRecentOnLaunch = UserDefaults.standard.object(forKey: "restoreRecentOnLaunch") as? Bool ?? true
+    @ObservationIgnored private var startupTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingTrialSnapshot: DisplaySnapshot?
+    @ObservationIgnored private var pendingProfiles: [String: String] = [:]
     var displays: [DisplayInfo] = []
     var controls: [CGDirectDisplayID: Controls] = [:]
     var mainID: CGDirectDisplayID = 0
@@ -129,23 +138,32 @@ final class DisplayManager {
             isApplying = true
             Task { [weak self] in await self?.restoreModeTrial() }
         } else {
-            scheduleRefresh(reprobe: true)
+            isApplying = true
+            startupTask = Task { [weak self] in await self?.restoreRecentAtStartup() }
         }
     }
 
     func stop() {
         guard started else { return }
         started = false
+        startupTask?.cancel()
+        let hadUnconfirmedTrial = UserDefaults.standard.stringArray(forKey: modeRecoveryKey) != nil
         modeTrialTask?.cancel()
         // Termination cannot await. A bounded recovery keeps an unconfirmed mode
         // from surviving a normal quit; failed recovery stays journaled for launch.
         if let args = UserDefaults.standard.stringArray(forKey: modeRecoveryKey) {
             scanDisplays()
             if DisplaySnapshot.canRestore(args, connectedIDs: connectedIDs, activeIDs: activeDisplayIDs),
-               let path = Bundle.main.url(forResource: "displayplacer", withExtension: nil)?.path,
-               CommandRunner.run(path, args).succeeded {
+               applyConfigurationOnQuit(args) {
                 UserDefaults.standard.removeObject(forKey: modeRecoveryKey)
             }
+        }
+        // Capture before restoring the built-in screen owned by the workflow.
+        scanDisplays()
+        if !hadUnconfirmedTrial, UserDefaults.standard.stringArray(forKey: modeRecoveryKey) == nil,
+           let path = Bundle.main.url(forResource: "displayplacer", withExtension: nil)?.path {
+            let result = CommandRunner.run(path, ["list"])
+            if result.succeeded { saveRecent(completeSnapshot(DisplaySnapshot(result.output))) }
         }
         CGDisplayRemoveReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
         changeTask?.cancel(); detailsTask?.cancel(); captureTask?.cancel(); workflowTask?.cancel(); permissionTask?.cancel(); hudHideTask?.cancel()
@@ -409,10 +427,15 @@ final class DisplayManager {
             let virtual = (info["kCGDisplayIsVirtualDevice"] as? Bool ?? false) || (info["kCGDisplayIsAirPlay"] as? Bool ?? false)
             if virtual && !isBuiltin { continue }
             let names = info["DisplayProductName"] as? [String: String]
-            var uuid = info["kCGDisplayUUID"] as? String ?? previous[id]?.uuid ?? ""
-            if uuid.isEmpty, let displayUUID = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() {
-                uuid = CFUUIDCreateString(nil, displayUUID) as String
-            }
+            let systemUUID: String?
+            if let value = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() {
+                systemUUID = CFUUIDCreateString(nil, value) as String
+            } else { systemUUID = nil }
+            let uuid = DisplayIdentityPolicy.stableUUID([
+                info["kCGDisplayUUID"] as? String, systemUUID, previous[id]?.uuid,
+                isBuiltin ? UserDefaults.standard.string(forKey: "display.builtinUUID.v1") : nil
+            ]) ?? ""
+            if isBuiltin && !uuid.isEmpty { UserDefaults.standard.set(uuid, forKey: "display.builtinUUID.v1") }
             // Unknown offline IDs cannot safely be used as physical display targets. A screen
             // that is lit right now must stay visible as "connected" so a hot-plug with a
             // UUID that has not resolved yet is not mistaken for an unplug; inactive ghosts
@@ -502,11 +525,14 @@ final class DisplayManager {
             }
             guard !Task.isCancelled, self.generation == expected else { return }
             guard let snapshot = await self.readSnapshot(), !Task.isCancelled, self.generation == expected else { return }
-            for device in devices {
+            self.currentLayouts = snapshot.layouts
+            for device in self.displays.filter(\.enabled) {
                 let modes = snapshot.modes[device.uuid] ?? []
                 self.mutateState(device.id) {
                     $0.modes = modes
                     $0.currentMode = modes.first(where: \.isCurrent)?.id ?? -1
+                    if reprobe || $0.colorProfiles.isEmpty { $0.colorProfiles = DisplayColorProfiles.options(device.id) }
+                    $0.colorProfile = DisplayColorProfiles.current(device.id) ?? ""
                     if let mode = CGDisplayCopyDisplayMode(device.id) {
                         $0.renderDescription = "界面 \(mode.width) × \(mode.height) · 渲染 \(mode.pixelWidth) × \(mode.pixelHeight)"
                     }
@@ -760,9 +786,13 @@ final class DisplayManager {
 
     private func readSnapshot() async -> DisplaySnapshot? {
         let result = await Subprocess.run("displayplacer", ["list"])
-        return result.succeeded ? DisplaySnapshot(result.output) : nil
+        return result.succeeded ? completeSnapshot(DisplaySnapshot(result.output)) : nil
+    }
+    private func completeSnapshot(_ snapshot: DisplaySnapshot) -> DisplaySnapshot {
+        snapshot.includingDisabled(Set(displays.filter { !$0.enabled }.map(\.uuid)))
     }
     private func saveLayout(_ snapshot: DisplaySnapshot) {
+        if !isApplying { saveRecent(snapshot) }
         guard UserDefaults.standard.stringArray(forKey: modeRecoveryKey) == nil,
               externalOnline, DisplaySnapshot.canRestore(snapshot.arguments, connectedIDs: connectedIDs, activeIDs: activeDisplayIDs) else { return }
         UserDefaults.standard.set(workflowLayout(snapshot.arguments), forKey: layoutKey)
@@ -780,11 +810,50 @@ final class DisplayManager {
         guard generation == expected, DisplaySnapshot.canRestore(arguments, connectedIDs: connectedIDs, activeIDs: activeDisplayIDs) else {
             lastError = "显示器连接已变化，请刷新后重试。"; return false
         }
+        let topology = connectedIDs
+        let plan = DisplayApplicationPlan(arguments)
         suppressCaptureUntil = Date().addingTimeInterval(2)
-        let result = await Subprocess.run("displayplacer", arguments)
-        if !result.succeeded { lastError = result.timedOut ? "显示设置操作超时。" : "显示设置未成功应用，请尝试其他模式。" }
+        var woke = false
+        for display in displays where plan.enabledIDs.contains(display.uuid) && !display.enabled {
+            guard PrivateAPI.setDisplayEnabled(id: display.id, enabled: true) else {
+                lastError = "无法启用 \(display.name)。"; return false
+            }
+            woke = true
+        }
+        if woke { try? await Task.sleep(for: .milliseconds(400)) }
+        scanDisplays()
+        guard connectedIDs == topology else { lastError = "连接已变化，已停止应用旧配置。"; return false }
+        let result = await Subprocess.run("displayplacer", plan.arguments)
+        guard result.succeeded else {
+            lastError = result.timedOut ? "显示设置操作超时。" : "显示设置未成功应用，请尝试其他模式。"
+            scheduleRefresh(); return false
+        }
+        scanDisplays()
+        guard connectedIDs == topology else { lastError = "连接已变化，已停止应用旧配置。"; return false }
+        for display in displays where plan.disabledIDs.contains(display.uuid) && display.enabled {
+            guard PrivateAPI.setDisplayEnabled(id: display.id, enabled: false) else {
+                lastError = "无法停用 \(display.name)。"; return false
+            }
+        }
+        scanDisplays()
         scheduleRefresh()
-        return result.succeeded
+        return true
+    }
+
+    private func applyConfigurationOnQuit(_ arguments: [String]) -> Bool {
+        guard let path = Bundle.main.url(forResource: "displayplacer", withExtension: nil)?.path else { return false }
+        let plan = DisplayApplicationPlan(arguments)
+        var woke = false
+        for display in displays where plan.enabledIDs.contains(display.uuid) && !display.enabled {
+            guard PrivateAPI.setDisplayEnabled(id: display.id, enabled: true) else { return false }
+            woke = true
+        }
+        if woke { Thread.sleep(forTimeInterval: 0.4) }
+        guard CommandRunner.run(path, plan.arguments).succeeded else { return false }
+        for display in displays where plan.disabledIDs.contains(display.uuid) {
+            if CGDisplayIsActive(display.id) != 0 && !PrivateAPI.setDisplayEnabled(id: display.id, enabled: false) { return false }
+        }
+        return true
     }
     func restoreLayout(silent: Bool = false) async {
         guard !isApplying else { return }
@@ -838,6 +907,7 @@ final class DisplayManager {
         lastError = nil
         workflowTask?.cancel()
         captureTask?.cancel()
+        saveRecent(snapshot)
         UserDefaults.standard.set(snapshot.arguments, forKey: modeRecoveryKey)
         // Ensure the recovery journal reaches disk before touching the display.
         UserDefaults.standard.synchronize()
@@ -859,7 +929,12 @@ final class DisplayManager {
             await restoreModeTrial()
             return
         }
-        modeTrialLabel = "\(display.name) · \(fresh.label)"
+        pendingTrialSnapshot = actual
+        beginTrialCountdown("\(display.name) · \(fresh.label)")
+    }
+
+    private func beginTrialCountdown(_ label: String) {
+        modeTrialLabel = label
         modeTrialSeconds = 15
         let deadline = Date().addingTimeInterval(15)
         modeTrialTask = Task { [weak self] in
@@ -874,9 +949,15 @@ final class DisplayManager {
 
     func keepModeTrial() {
         guard modeTrialLabel != nil, modeTrialSeconds > 0 else { return }
+        let profiles = pendingProfiles
+        let confirmed = pendingTrialSnapshot
         clearModeTrial()
-        isApplying = false
         lastError = nil
+        scanDisplays()
+        applyProfiles(profiles)
+        if builtin?.enabled == true { userRestoredBuiltin = true; workflowHoldsBuiltinOff = false }
+        isApplying = false
+        if let confirmed { saveRecent(confirmed) }
         suppressCaptureUntil = Date().addingTimeInterval(1)
         scheduleRefresh()
     }
@@ -884,6 +965,8 @@ final class DisplayManager {
     private func clearModeTrial() {
         modeTrialTask?.cancel(); modeTrialTask = nil
         modeTrialLabel = nil; modeTrialSeconds = 0
+        pendingProfiles = [:]
+        pendingTrialSnapshot = nil
         UserDefaults.standard.removeObject(forKey: modeRecoveryKey)
         UserDefaults.standard.synchronize()
     }
@@ -903,10 +986,176 @@ final class DisplayManager {
         }
         if await apply(args, expected: generation) {
             clearModeTrial()
+            adoptRestoredConfiguration()
         } else {
             lastError = "原显示模式恢复失败，请打开系统显示器设置或使用“全部点亮”。下次启动将重试。"
         }
     }
+    private func adoptRestoredConfiguration() {
+        scanDisplays()
+        userRestoredBuiltin = builtin?.enabled == true
+        workflowHoldsBuiltinOff = builtin?.enabled == false && externalOnline && autoWorkflow
+        changedBuiltinForWorkflow = workflowHoldsBuiltinOff
+        previousExternals = Set(displays.filter { !$0.isBuiltin }.map(\.uuid))
+        previousExternalOnline = externalOnline
+    }
+
+    private static func loadConfigurations(_ key: String) -> [DisplayConfiguration] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [] }
+        return ((try? JSONDecoder().decode([DisplayConfiguration].self, from: data)) ?? []).filter {
+            $0.screenIDs.allSatisfy { DisplayIdentityPolicy.stableUUID([$0]) != nil }
+        }
+    }
+
+    private func persistConfigurations() {
+        UserDefaults.standard.set(try? JSONEncoder().encode(configurationPresets), forKey: "display.presets.v1")
+        UserDefaults.standard.set(try? JSONEncoder().encode(recentConfigurations), forKey: "display.recent.v1")
+        UserDefaults.standard.synchronize()
+    }
+
+    private func profileSnapshot() -> [String: String] {
+        Dictionary(uniqueKeysWithValues: displays.filter(\.enabled).compactMap { display in
+            DisplayColorProfiles.current(display.id).map { (display.uuid, $0) }
+        })
+    }
+
+    private func saveRecent(_ snapshot: DisplaySnapshot) {
+        guard UserDefaults.standard.stringArray(forKey: modeRecoveryKey) == nil,
+              Set(snapshot.layouts.map(\.uuid)) == connectedIDs,
+              DisplaySnapshot.canRestore(snapshot.arguments, connectedIDs: connectedIDs, activeIDs: activeDisplayIDs) else { return }
+        let config = DisplayConfiguration(name: "最近使用", snapshot: snapshot, profiles: profileSnapshot())
+        recentConfigurations.removeAll { $0.screenIDs == config.screenIDs }
+        recentConfigurations.insert(config, at: 0)
+        recentConfigurations = Array(recentConfigurations.prefix(20))
+        persistConfigurations()
+    }
+
+    func setRestoreRecentOnLaunch(_ enabled: Bool) {
+        restoreRecentOnLaunch = enabled
+        UserDefaults.standard.set(enabled, forKey: "restoreRecentOnLaunch")
+    }
+
+    private func restoreRecentAtStartup() async {
+        // A short bounded delay lets display services enumerate attached devices.
+        do { try await Task.sleep(for: .milliseconds(900)) } catch { return }
+        guard started, !Task.isCancelled else { return }
+        scanDisplays()
+        var restored = false
+        if restoreRecentOnLaunch, let config = recentConfigurations.first(where: { $0.matches(connectedIDs) }) {
+            let expected = generation
+            if let baseline = await readSnapshot(), config.isSupported(by: baseline),
+               DisplaySnapshot.canRestore(baseline.arguments, connectedIDs: connectedIDs, activeIDs: activeDisplayIDs) {
+                UserDefaults.standard.set(baseline.arguments, forKey: modeRecoveryKey)
+                UserDefaults.standard.synchronize()
+                let success = await apply(config.arguments, expected: expected)
+                if success { try? await Task.sleep(for: .milliseconds(700)) }
+                scanDisplays()
+                let actual = await readSnapshot()
+                if !success || actual.map({ !config.hasSameLayout(as: $0) }) != false {
+                    await restoreModeTrial()
+                    lastError = "最近配置未能完整恢复，已尝试还原启动前的布局。"
+                } else {
+                    clearModeTrial()
+                    scanDisplays()
+                    applyProfiles(config.profiles)
+                    adoptRestoredConfiguration()
+                    restored = true
+                }
+            } else { lastError = "最近配置包含当前不可用的模式，已保留系统现有配置。" }
+        }
+        // Mark the initial topology seen so the older attach workflow cannot
+        // immediately overwrite a deliberately restored recent configuration.
+        if restored {
+            previousExternals = Set(displays.filter { !$0.isBuiltin }.map(\.uuid))
+            previousExternalOnline = externalOnline
+        }
+        isApplying = false
+        scheduleRefresh(reprobe: true)
+    }
+
+    func saveConfigurationPreset(_ name: String) async {
+        guard !isApplying else { return }
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        guard !trimmed.isEmpty else { return }
+        let expected = generation
+        guard let snapshot = await readSnapshot(), expected == generation,
+              Set(snapshot.layouts.map(\.uuid)) == connectedIDs,
+              DisplaySnapshot.canRestore(snapshot.arguments, connectedIDs: connectedIDs, activeIDs: activeDisplayIDs) else {
+            lastError = "无法读取完整配置，请重新检测后保存。"; return
+        }
+        configurationPresets.append(DisplayConfiguration(name: trimmed, snapshot: snapshot, profiles: profileSnapshot()))
+        persistConfigurations()
+    }
+
+    func deleteConfigurationPreset(_ id: UUID) {
+        configurationPresets.removeAll { $0.id == id }
+        persistConfigurations()
+    }
+
+    func presetAvailable(_ config: DisplayConfiguration) -> Bool { config.matches(connectedIDs) }
+
+    func applyConfigurationPreset(_ config: DisplayConfiguration) async {
+        guard config.matches(connectedIDs) else { lastError = "请先连接预设中相同的显示器组合。"; return }
+        await trialConfiguration(arguments: config.arguments, layouts: config.layouts,
+                                 label: "预设 · " + config.name, profiles: config.profiles)
+    }
+
+    func applyArrangement(_ layouts: [DisplayLayout], main: String) async {
+        guard !mirrored, Set(layouts.map(\.uuid)) == connectedIDs,
+              let normalized = DisplaySnapshot.movingMain(to: main, in: layouts) else { return }
+        await trialConfiguration(arguments: normalized.map(\.argument), layouts: normalized, label: "屏幕排列")
+    }
+
+    private func trialConfiguration(arguments: [String], layouts: [DisplayLayout], label: String,
+                                    profiles: [String: String] = [:]) async {
+        guard !isApplying, UserDefaults.standard.stringArray(forKey: modeRecoveryKey) == nil else { return }
+        isApplying = true
+        let expected = generation
+        guard let snapshot = await readSnapshot(), generation == expected,
+              DisplaySnapshot.canRestore(snapshot.arguments, connectedIDs: connectedIDs, activeIDs: activeDisplayIDs),
+              DisplayConfiguration(name: label, snapshot: {
+                  var requested = snapshot; requested.layouts = layouts; requested.arguments = arguments; return requested
+              }(), profiles: profiles).isSupported(by: snapshot) else {
+            isApplying = false; lastError = "预设中的显示模式已不可用，请重新选择分辨率或刷新率。"; return
+        }
+        workflowTask?.cancel(); captureTask?.cancel()
+        lastError = nil
+        saveRecent(snapshot)
+        UserDefaults.standard.set(snapshot.arguments, forKey: modeRecoveryKey)
+        UserDefaults.standard.synchronize()
+        guard await apply(arguments, expected: expected) else { await restoreModeTrial(); return }
+        try? await Task.sleep(for: .milliseconds(700))
+        guard let actual = await readSnapshot(), layouts.allSatisfy({ wanted in
+            actual.layouts.contains { value in
+                value.uuid == wanted.uuid && value.enabled == wanted.enabled
+                    && (!wanted.enabled || (value.width == wanted.width && value.height == wanted.height
+                        && value.hertz == wanted.hertz && value.scaling == wanted.scaling
+                        && value.x == wanted.x && value.y == wanted.y && value.rotation == wanted.rotation))
+            }
+        }) else {
+            lastError = "未能确认完整排列，正在恢复原配置。"; await restoreModeTrial(); return
+        }
+        pendingProfiles = profiles
+        pendingTrialSnapshot = actual
+        beginTrialCountdown(label)
+    }
+
+    private func applyProfiles(_ profiles: [String: String]) {
+        for display in displays where display.enabled {
+            if let path = profiles[display.uuid], !DisplayColorProfiles.set(path, display: display.id) {
+                lastError = "\(display.name) 的色彩描述文件不可用或系统拒绝应用。"
+            }
+        }
+    }
+
+    func setColorProfile(_ display: DisplayInfo, path: String) {
+        guard !isApplying, display.enabled else { return }
+        if DisplayColorProfiles.set(path, display: display.id) {
+            mutateState(display.id) { $0.colorProfile = DisplayColorProfiles.current(display.id) ?? "" }
+            scheduleRefresh(reprobe: true)
+        } else { lastError = "色彩描述文件应用失败，请确认文件仍存在且系统允许更改。" }
+    }
+
     func setMirror(_ enabled: Bool) async {
         guard !isApplying, displays.filter(\.enabled).count >= 2 else { return }
         isApplying = true

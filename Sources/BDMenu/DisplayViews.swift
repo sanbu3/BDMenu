@@ -109,6 +109,10 @@ struct DisplayCard: View {
 
     @ViewBuilder private var advancedControls: some View {
         if !state.modes.isEmpty {
+            if let current = state.modes.first(where: { $0.id == state.currentMode }) {
+                DisplayModeControls(display: display, current: current, modes: state.modes)
+                HiDPIControls(display: display, current: current, modes: state.modes)
+            }
             VStack(alignment: .leading, spacing: 10) {
                 Label("流畅度对照", systemImage: "speedometer").font(.headline)
                 if !state.renderDescription.isEmpty {
@@ -142,6 +146,14 @@ struct DisplayCard: View {
                 }
             }
             .disabled(dm.isApplying || dm.mirrored)
+        }
+        if !state.colorProfiles.isEmpty {
+            CapsuleMenu(title: "色彩描述文件", value: state.colorProfiles.first(where: { $0.id == state.colorProfile })?.title ?? "当前描述文件") {
+                ForEach(state.colorProfiles) { profile in
+                    Button(profile.title) { dm.setColorProfile(display, path: profile.id) }
+                }
+            }
+            .disabled(dm.isApplying)
         }
         if state.hasInput {
             CapsuleMenu(title: "输入源", value: dm.inputOptions.first(where: { $0.0 == state.input })?.1 ?? "当前 (\(state.input))") {

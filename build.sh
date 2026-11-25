@@ -77,6 +77,7 @@ if ! mv "$APP" "$OUTPUT_DIR/BDMenu.app"; then
   if [ -d "$OUTPUT_DIR/BDMenu.previous.app" ]; then mv "$OUTPUT_DIR/BDMenu.previous.app" "$OUTPUT_DIR/BDMenu.app"; fi
   exit 1
 fi
+rm -rf "$OUTPUT_DIR/BDMenu.previous.app"
 if ! $ADHOC; then
   # Persist the chosen identity outside .build so a clean build does not change it.
   printf '%s\n' "$IDENTITY" > .signing-identity

@@ -132,6 +132,7 @@ private struct DisplaysPage: View {
                 }
             }
         }
+        DisplayArrangementView()
         ForEach(dm.presentationDisplays) { DisplayCard(display: $0) }
         BDMenuCard {
             VStack(alignment: .leading, spacing: 18) {

@@ -82,6 +82,16 @@ public struct DisplaySnapshot: Sendable {
         }
         flush()
     }
+    public func includingDisabled(_ ids: Set<String>) -> DisplaySnapshot {
+        var result = self
+        for id in ids.sorted() where !result.layouts.contains(where: { $0.uuid == id }) {
+            guard UUID(uuidString: id) != nil else { continue }
+            var layout = DisplayLayout(); layout.uuid = id
+            result.layouts.append(layout)
+            result.arguments.append(layout.argument)
+        }
+        return result
+    }
     private static func value(_ line: String) -> String {
         guard let colon = line.firstIndex(of: ":") else { return "" }
         return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
