@@ -5,7 +5,7 @@ import Observation
 @MainActor @Observable
 final class AppPresentation: NSObject, NSWindowDelegate {
     enum Page: Int, CaseIterable, Identifiable {
-        case displays, keyboard, automation, application, dock
+        case displays, keyboard, automation, application
         var id: Int { rawValue }
         var title: String {
             switch self {
@@ -13,7 +13,6 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             case .keyboard: return "快捷键"
             case .automation: return "自动化"
             case .application: return "应用与权限"
-            case .dock: return "Dock"
             }
         }
         var symbol: String {
@@ -22,7 +21,6 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             case .keyboard: return "keyboard"
             case .automation: return "switch.2"
             case .application: return "slider.horizontal.3"
-            case .dock: return "dock.rectangle"
             }
         }
         var subtitle: String {
@@ -31,7 +29,6 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             case .keyboard: return "把常用的亮度调节，交给你习惯的按键。"
             case .automation: return "接入外接屏以后，让桌面按你的习惯运行。"
             case .application: return "管理外观与权限，随时了解当前运行状态。"
-            case .dock: return "把扩展应用栏固定到任意在线屏幕，或让它跟随鼠标。"
             }
         }
     }

@@ -1,94 +1,35 @@
-# BDMenu · macOS 多显示器与亮度管理
+# BDMenu · macOS 显示器与亮度管理
 
-**用罗技 F4 / F5 调节当前窗口所在屏幕的亮度，让外接显示器工作流更顺手。**
+面向 Apple Silicon Mac 的原生菜单栏工具，SwiftUI + AppKit，macOS 14+。
 
-BDMenu 是面向 Apple Silicon Mac 的免费开源菜单栏显示器管理器，使用 SwiftUI + AppKit 构建。它集中管理内建屏与外置屏亮度、显示器启停、分辨率、输入源、镜像、主屏及多屏扩展应用栏，并提供外接屏接入／断开的自动工作流。
+## 当前功能（2.4.1）
 
-**English:** BDMenu is an open-source macOS menu bar display manager for Apple Silicon. Control the focused monitor's brightness with customizable Logitech F4/F5 shortcuts, DDC/CI hardware control or gamma dimming. Includes built-in display automation, display identification, resolution switching and an independent Dock companion with fixed-screen and pointer-follow modes, including vertically stacked displays.
+- 用可配置亮度键调节焦点窗口或鼠标所在屏幕：内建屏原生亮度，外置屏优先 DDC/CI，不支持时软件调光。
+- 显示界面与实际渲染尺寸；60 / 120 Hz 对照保持分辨率及 HiDPI 不变。完整显示模式菜单仍可手动选择硬件支持的模式。
+- 模式先试用 15 秒，未保留自动恢复；恢复日志支持正常退出和下次启动恢复尝试。连接变化时不套用旧屏幕配置。
+- 外接屏自动工作流、主屏、镜像、输入源、屏幕识别及全部点亮；内建屏停用时可辅助选择系统密码验证入口，不读取、输入或提交密码。
+- 外置屏实际启用时菜单栏图标正常显示；仅内建屏或外置屏停用时灰化。依靠显示器变化事件更新，无图标动画或状态轮询。
+- 按用户选择移除扩展 Dock 栏、设置页及其后台任务。控制中心保留显示器、快捷键、自动化、应用与权限四页。
+- 不增加等比缩放、虚拟屏、持续捕屏或画面串流功能。HiDPI 清晰度和渲染负载需权衡；当前模式不能仅凭参数认定最优，整机卡顿仍需实际对照。
 
-## 亮点与典型场景
+## 构建与安装
 
-| 场景 | BDMenu 的处理方式 |
-| --- | --- |
-| 窗口在外接屏，鼠标留在 MacBook 上 | F4 / F5 跟随焦点窗口；也可改为跟随鼠标 |
-| 夜间需要更细的亮度调整 | 按住 Shift 精细调节；长按可连续调整，底部居中 HUD 不显示百分比 |
-| 显示器支持 DDC/CI | 调节硬件背光；检测不可用时提供 gamma 软件调光，并明确显示状态 |
-| 外接屏办公，希望关闭内建屏 | 自动工作流管理内建屏、主屏、亮度和按连接组合记忆的布局 |
-| 内建屏关闭，不方便触摸 Touch ID | 自动选择受支持系统授权窗口的密码入口并聚焦输入框；内建屏可用且指纹可用时优先 Touch ID |
-| 外置屏在上、MacBook 在下，底边呼出会跑到下屏 | 直接把 BDMenu 扩展应用栏固定在上方外置屏内部，或让它跟随鼠标所在屏幕 |
-| 分不清屏幕名称 | 在所有在线屏幕上显示编号与名称，再选择管理目标 |
-
-密码入口辅助不读取或输入密码，也不提交授权；无法全局强制所有系统／第三方验证窗口。扩展应用栏是独立的应用启动／切换栏，不搬移原生 Dock，也不改变屏幕排列或鼠标位置。详见下方说明与 [Dock 使用说明](docs/DOCK.md)。
-
-界面采用较大的文字、开关、胶囊按钮和自定义圆角窗体，支持浅色、深色及跟随系统。应用不接管音量或扬声器。
-
-![BDMenu macOS focused-display brightness HUD without percentages](docs/images/brightness-hud.png)
-
-## 快速开始
-
-1. 按下方步骤构建并安装，首次使用允许“辅助功能”权限。
-2. 在“快捷键”中确认 F4 / F5，或录制键盘实际发送的按键。
-3. 选中目标屏幕上的窗口，使用亮度键；按住 Shift 可精细调整。
-4. 在“显示器”中识别屏幕、切换显示模式；在独立的“Dock”页（⌘5）启用扩展应用栏，选择固定屏幕或跟随鼠标。支持单屏、左右与上下排列。
-
-**检索关键词 / Search terms:** macOS display manager · external monitor brightness · focused display · DDC/CI · software dimming · Logitech F4 F5 · multi-monitor Dock companion · stacked displays · app launcher · Touch ID password fallback · Apple Silicon · SwiftUI · 外接显示器亮度 · 罗技键盘 · 多屏管理。
-
-## 功能
-
-- **快捷面板**：左击菜单栏图标快速调节亮度、启停屏幕和全部点亮，在线主屏优先显示；右击打开控制中心、快捷键或退出。连接外置显示器时图标正常显示，未连接时呈浅灰色；灰色状态仍可点击，悬停可查看连接状态。
-- **多屏扩展应用栏**：固定到指定在线屏幕，或随鼠标跨屏切换；支持上大下小布局。同步系统 Dock 固定的应用及正在运行的应用，点击打开／切换，前台应用再点隐藏、隐藏后再点恢复；右键支持常用应用操作与原生菜单调用，支持自动隐藏、横向滚动和栏内快捷菜单。不需要先在目标屏幕呼出原生 Dock。
-- **控制中心**：显示器、快捷键、自动化、应用与权限、Dock 五个页面，支持 ⌘1–⌘5 导航。关闭窗口后继续在菜单栏运行，重新打开应用可找回窗口。
-- **开关任意显示器**:通过 SkyLight 关闭/重新启用显示器；保留至少一块在线实体屏，实际支持取决于 macOS
-- **亮度**:
-  - 内建屏:DisplayServices 原生亮度
-  - 外置屏:DDC/CI 硬件亮度(通过 m1ddc);DDC 检测不可用时使用 gamma 软件调光（显示状态，正常退出恢复原色彩曲线）
-- **可自定义亮度快捷键**：默认 F4 降低、F5 提高，调节当前活动窗口所在屏幕；跨屏窗口取占用面积最大的一块屏幕，无法读取窗口时回退到鼠标。也可选择始终跟随鼠标。
-- **按键录制**：菜单栏 → 按键设置，分别录制降低／提高亮度的 F 键、媒体键或组合键，绑定自动保存。Esc、关闭设置或切换应用取消录制。普通字符键需搭配 ⌘、⌃ 或 ⌥。
-- **精细与连续调节**：按住快捷键连续调节，额外按 ⇧ 精细步进（兼容原来的 ⇧⌥）。可同时接管原生亮度媒体键及 F14/F15；内建屏与外接屏均显示 HUD。需要辅助功能权限。
-- **罗技 F4/F5**：默认绑定标准 F4/F5。若键盘发送媒体事件，在按键设置中录制实际按键；若按键由键盘固件处理、无法录制，请在 Logi Options+ 中设为标准 F 键，或尝试 Fn＋F4/F5。
-- **外置屏控制**:输入源切换(DP/HDMI/USB-C)、分辨率/刷新率/HiDPI 切换(displayplacer)
-- **自动工作流**(核心):开启后
-  - 接入外置屏 → 自动关闭内建屏,外置屏成为主屏(Dock/菜单栏随之迁移)
-  - 断开外置屏 → 自动恢复内建屏与之前的亮度
-  - 布局自动记忆、重连自动还原,无需手动保存
-  - 含恢复保护：拔出最后一块外置屏时尝试恢复已识别的内建屏，过滤已标记的虚拟屏/AirPlay；不猜测显示器 ID
-- **镜像模式**、**设为主屏**、**登录时启动**(SMAppService)
-- **全部点亮**：恢复可识别实体屏及亮度，同时暂停自动工作流
-
-## 系统要求
-
-- macOS 14+（Sonoma）、Apple Silicon；构建需要 Xcode Command Line Tools
-- 外置屏 DDC 支持取决于 Mac、显示器、接口、线材及内置 m1ddc 版本；USB-C/DisplayPort 是常见路径，不能笼统认为所有 HDMI 都不支持
-
-## 安装与构建
-
-```bash
-./build.sh       # 使用固定签名身份，生成 ~/Library/Application Support/BDMenu/Build/BDMenu.app
-./install.sh     # 安装/更新到 /Applications/BDMenu.app，并启动
+```sh
+./build.sh
+./install.sh
 ```
 
-首次构建会选择唯一的 Apple Development（或 Developer ID Application）身份，并记在仅本地的 `.signing-identity` 中。没有证书或存在多个候选时会停止并给出指引，不会静默退回临时签名。可显式选择：
+构建使用固定 Apple Development 或 Developer ID 签名；本地身份保存在不入库的 `.signing-identity`。无证书的临时测试可用 `./build.sh --adhoc`。构建包位于 `~/Library/Application Support/BDMenu/Build/BDMenu.app`，安装到 `/Applications/BDMenu.app`。
 
-```bash
-security find-identity -v -p codesigning
-CODE_SIGN_IDENTITY='你的证书 SHA-1' ./build.sh
-```
+辅助功能权限用于亮度键及验证入口辅助；未授权仍可使用面板亮度。DDC 和显示器启停受硬件、连接与 macOS 支持限制。打包的 m1ddc / displayplacer 完整许可证在应用 Resources/Licenses。
 
-如果没有可用身份，可在 Xcode → Settings → Accounts → Manage Certificates 中配置 Apple Development 证书。测试/CI 可以使用 `./build.sh --adhoc`，但此构建不保证更新后保留辅助功能授权。
+## 二次开发
 
-**从旧版本升级**：安装完成后，在系统设置 → 隐私与安全性 → 辅助功能中移除旧 BDMenu，重新添加并允许 `/Applications/BDMenu.app`。面板会自动更新授权状态，必要时退出并重新启动。签名身份兼容且 Bundle ID 不变时通常可延续授权，但不能保证永久有效。
+[路线与来源](docs/REDEVELOPMENT.md) · [验证记录](docs/VALIDATION.md)
 
-登录时启动：在面板中打开开关；需要审批时会进入系统登录项设置。
+BetterDisplay 主应用并未开源，当前参考公开功能设计。MonitorControl 与 m1ddc / displayplacer 是可研究的 MIT 项目；Lunar 的公开源码不含完整付费部分。研究热度不代表已经测得其低 GPU 占用。
 
-## 2.4.0 显示负载对照与低开销常驻
-
-- 显示实际界面与渲染像素尺寸；60 / 120 Hz 试用只改变刷新率，保持分辨率和 HiDPI。仅提供硬件列出的模式，不保证某一模式必然消除卡顿。
-- 所有显示模式先试用 15 秒，可保留或恢复；未确认自动恢复。恢复配置在切换前写入，正常退出尝试恢复，异常退出在下次启动重试。连接组合变化时取消旧恢复，不向其他屏幕套用配置。
-- 试用期间暂停自动工作流和布局记忆，保留“全部点亮”紧急入口。内建屏停用且 displayplacer 不列出它时，模式切换不再因列表差异被拒绝。
-- 固定扩展栏且关闭自动隐藏时停止鼠标定时轮询，应用列表由系统应用事件更新；跟随鼠标或自动隐藏时才保留 200 ms 检查。周期检查得到相同应用状态时不重写可观察数组。
-- 不启动持续屏幕捕获、视频合成或 GPU 采样任务。低开销常驻与整机 GPU 负载是两件事，不能把渲染尺寸或刷新率当作 GPU 利用率。
-
-后续融合调研、来源与验收约束见 [二次开发路线](docs/REDEVELOPMENT.md)。
+以下是历史版本记录，其中 Dock 内容已在 2.4.1 移除。
 
 ## 2.3.3 开关提示与自动工作流修复
 

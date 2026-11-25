@@ -64,7 +64,6 @@ struct ControlCenterView: View {
                     case .keyboard: KeyboardSettingsView()
                     case .automation: AutomationPage().disabled(dm.isApplying)
                     case .application: ApplicationPage()
-                    case .dock: DockSettingsCard()
                     }
                 }
                 .padding(.horizontal, 28)

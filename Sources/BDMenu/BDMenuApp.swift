@@ -11,7 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         InterfaceInputState.shared.start()
-        manager.appBar.openSettings = { [weak self] in self?.presentation.show(.dock) }
         manager.start()
         presentation.applyAppearance()
         configureMenus()
@@ -57,12 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func updateStatusAppearance() {
         withObservationTracking {
-            // A connected but manually disabled external display is still attached.
-            let connected = manager.displays.contains { !$0.isBuiltin }
+            // Observe display changes; no polling, animation, or additional rendering.
+            let connected = manager.externalOnline
             guard let button = statusItem?.button else { return }
             // Dim the template symbol while keeping both mouse actions available.
             button.appearsDisabled = !connected
-            let state = connected ? "已连接外置显示器" : "未连接外置显示器"
+            let state = connected ? "正在使用外置显示器" : "仅使用内建显示器或未启用外置屏"
             button.toolTip = "BDMenu · \(state)"
             button.setAccessibilityLabel("BDMenu 显示器控制，\(state)")
         } onChange: { [weak self] in
@@ -76,7 +75,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             let menu = NSMenu()
             menu.addItem(item("控制中心…", action: #selector(openCenter)))
             menu.addItem(item("快捷键…", action: #selector(openKeyboard)))
-            menu.addItem(item("Dock 设置…", action: #selector(openDock)))
             menu.addItem(.separator())
             menu.addItem(item("退出 BDMenu", action: #selector(quit)))
             if let event = NSApplication.shared.currentEvent { NSMenu.popUpContextMenu(menu, with: event, for: button) }
@@ -88,7 +86,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     @objc private func openCenter() { popover?.performClose(nil); presentation.show(.displays) }
     @objc private func openKeyboard() { popover?.performClose(nil); presentation.show(.keyboard) }
-    @objc private func openDock() { popover?.performClose(nil); presentation.show(.dock) }
     @objc private func openApplication() { popover?.performClose(nil); presentation.show(.application) }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
     @objc private func selectPage(_ sender: NSMenuItem) {
