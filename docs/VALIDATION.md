@@ -1,8 +1,18 @@
 # BDMenu 验证与迁移
 
+## 2.6.0 本地验证（2026-11-27）
+
+- `swift test`：DisplayCore 31 项、BDMenu 23 项，共 54 项通过。新增角度双阈值、稳定等待与无效报告测试。
+- Release 构建、固定开发身份签名、`codesign --verify --deep --strict` 通过；已安装到 `/Applications/BDMenu.app`。签名通过不代表公证完成。
+- M2 Air 标准 HID 角度读取与 GPU 驱动统计可用，界面与媒体中使用真实读数；不把单个 GPU 数字当作性能基准。
+- 角度策略完整物理开合、拔插和唤醒矩阵仍需实机验收；通用窗口适配及自动降载尚未实现。
+- 新版窗口关闭动作已绑定 ⌘W / Esc；UI 自动化采集受到会话重置影响，完整快捷键人工验收仍应补做。
+- 截图/录屏与下一阶段验收范围见 [操作指南](GUIDE.md)、[开发基线](ROADMAP.md)。
+
+
 ## 自动验证
 
-GitHub Actions 在 macOS 14 / Apple Silicon 上运行：
+GitHub Actions 当前使用 `macos-15` runner（以 `.github/workflows/ci.yml` 为准）：
 
 - Shell 语法检查及 4 项真实 CLI 入口测试：相对布局、旋转、缺失刷新率、参数边界和配置路径。
 - `swift test`：编译整个应用，并测试 displayplacer 文本解析、独立模式编号、缺失刷新率、关闭屏幕记录、旋转、负坐标、切换主屏、镜像 UUID 组、连接集合验证和配置参数边界。
