@@ -3,7 +3,7 @@ import SwiftUI
 
 enum BDMenuStyle {
     static let body = Font.system(size: 15)
-    static let detail = Font.system(size: 13)
+    static let detail = Font.system(size: 14)
     static let section = Font.system(size: 16, weight: .semibold)
     static let title = Font.system(size: 25, weight: .semibold)
     static let accent = Color.blue
@@ -13,29 +13,11 @@ struct BDMenuBackground: View {
     var windowSurface = false
     var body: some View {
         ZStack {
-            if windowSurface { WindowMaterial() }
-            else { Rectangle().fill(.ultraThinMaterial) }
+            Rectangle().fill(.ultraThinMaterial)
             RadialGradient(colors: [BDMenuStyle.accent.opacity(0.09), .clear],
                            center: .topTrailing, startRadius: 0, endRadius: 650)
         }
         .accessibilityHidden(true)
-    }
-}
-
-/// Use a behind-window material for a transparent custom window. SwiftUI's
-/// within-window material alone can wash out dark text contrast over a light desktop.
-private struct WindowMaterial: NSViewRepresentable {
-    @Environment(\.colorScheme) private var colorScheme
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .underWindowBackground
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
     }
 }
 
@@ -96,7 +78,7 @@ struct BDMenuCapsuleButtonStyle: PrimitiveButtonStyle {
                 Capsule().fill(prominent ? BDMenuStyle.accent : Color.primary.opacity(hovered || (focused && InterfaceInputState.shared.keyboardNavigation) ? 0.10 : 0.055))
             }
             .overlay {
-                Capsule().strokeBorder(Color.primary.opacity(prominent ? 0 : 0.10), lineWidth: 1)
+                Capsule().strokeBorder(focused && InterfaceInputState.shared.keyboardNavigation ? BDMenuStyle.accent : Color.primary.opacity(prominent ? 0 : 0.10), lineWidth: focused && InterfaceInputState.shared.keyboardNavigation ? 2 : 1)
             }
             .onHover { hovered = $0 }
             .opacity(enabled ? 1 : 0.42)
@@ -148,9 +130,12 @@ struct SectionHeading: View {
                 .background(BDMenuStyle.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
             VStack(alignment: .leading, spacing: 5) {
                 Text(title).font(BDMenuStyle.section)
-                Text(subtitle).font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Explanations stay available without competing with the controls.
             }
+            Spacer(minLength: 0)
+            Image(systemName: "info.circle")
+                .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                .help(subtitle).accessibilityLabel(subtitle)
         }
     }
 }

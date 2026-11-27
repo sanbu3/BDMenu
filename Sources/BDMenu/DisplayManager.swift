@@ -57,6 +57,12 @@ final class DisplayManager {
     var modeTrialLabel: String?
     @ObservationIgnored private var modeTrialTask: Task<Void, Never>?
     private let modeRecoveryKey = "pendingModeRecovery.v1"
+    let hardware = HardwareMonitor()
+    var lidAutomation = UserDefaults.standard.bool(forKey: "lidAutomation")
+    var lidCloseAngle = min(145, max(10, UserDefaults.standard.object(forKey: "lidCloseAngle") as? Double ?? 65))
+    var lidOpenAngle = min(150, max(15, UserDefaults.standard.object(forKey: "lidOpenAngle") as? Double ?? 80))
+    @ObservationIgnored private var lidPolicy = LidAnglePolicy()
+    @ObservationIgnored private var lastLidWrite = Date.distantPast
     var autoWorkflow = UserDefaults.standard.bool(forKey: "autoWorkflow")
     var preferPasswordWhenBuiltinOff = UserDefaults.standard.object(forKey: "preferPasswordWhenBuiltinOff") as? Bool ?? true
     let passwordPreference = PasswordPreferenceController()
@@ -121,6 +127,10 @@ final class DisplayManager {
     func start() {
         guard !started else { return }
         started = true
+        lidOpenAngle = min(150, max(lidCloseAngle + 5, UserDefaults.standard.object(forKey: "lidOpenAngle") as? Double ?? 80))
+        if lidAutomation { autoWorkflow = false }
+        hardware.onAngle = { [weak self] angle in self?.handleLidAngle(angle) }
+        hardware.start()
         CGDisplayRegisterReconfigurationCallback(displayCallback, Unmanaged.passUnretained(self).toOpaque())
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
                                                                 object: nil, queue: .main) { [weak self] _ in
@@ -146,6 +156,7 @@ final class DisplayManager {
     func stop() {
         guard started else { return }
         started = false
+        hardware.stop()
         startupTask?.cancel()
         let hadUnconfirmedTrial = UserDefaults.standard.stringArray(forKey: modeRecoveryKey) != nil
         modeTrialTask?.cancel()
@@ -723,6 +734,8 @@ final class DisplayManager {
         // Explicit recovery also pauses the automation that would immediately switch it off again.
         clearModeTrial()
         isApplying = false
+        lidAutomation = false
+        UserDefaults.standard.set(false, forKey: "lidAutomation")
         autoWorkflow = false
         UserDefaults.standard.set(false, forKey: "autoWorkflow")
         workflowTask?.cancel()
@@ -738,7 +751,55 @@ final class DisplayManager {
         scheduleRefresh(reprobe: true)
     }
 
+    func setLidAutomation(_ enabled: Bool) {
+        if enabled { setAutoWorkflow(false) }
+        lidAutomation = enabled
+        UserDefaults.standard.set(enabled, forKey: "lidAutomation")
+        lidPolicy = LidAnglePolicy()
+        userRestoredBuiltin = false
+        if !enabled, changedBuiltinForWorkflow, let id = knownBuiltinID {
+            if setEnabled(id, true) {
+                if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(id, value / 100) }
+                changedBuiltinForWorkflow = false
+                preWorkflowBrightness = nil
+                workflowHoldsBuiltinOff = false
+            }
+        }
+    }
+
+    func setLidThreshold(close: Double? = nil, open: Double? = nil) {
+        if let close { lidCloseAngle = min(lidOpenAngle - 5, max(10, close)) }
+        if let open { lidOpenAngle = max(lidCloseAngle + 5, min(150, open)) }
+        UserDefaults.standard.set(lidCloseAngle, forKey: "lidCloseAngle")
+        UserDefaults.standard.set(lidOpenAngle, forKey: "lidOpenAngle")
+        lidPolicy = LidAnglePolicy()
+        userRestoredBuiltin = false
+    }
+
+    private func handleLidAngle(_ angle: Double?) {
+        guard lidAutomation, !isApplying, modeTrialLabel == nil else { return }
+        guard let externalOnly = lidPolicy.update(angle: angle, close: lidCloseAngle,
+                open: lidOpenAngle, now: ProcessInfo.processInfo.systemUptime) else { return }
+        if userRestoredBuiltin, !externalOnly { userRestoredBuiltin = false }
+        guard externalOnline, let builtin, !userRestoredBuiltin,
+              Date().timeIntervalSince(lastLidWrite) >= 3 else { return }
+        let enabled = !externalOnly
+        guard builtin.enabled != enabled else { return }
+        lastLidWrite = Date()
+        suppressCaptureUntil = Date().addingTimeInterval(4)
+        if externalOnly { preWorkflowBrightness = state(builtin.id).brightness }
+        if setEnabled(builtin.id, enabled) {
+            changedBuiltinForWorkflow = externalOnly
+            workflowHoldsBuiltinOff = externalOnly
+            if enabled {
+                if let value = preWorkflowBrightness { _ = PrivateAPI.setBrightness(builtin.id, value / 100) }
+                preWorkflowBrightness = nil
+            }
+        }
+    }
+
     func setAutoWorkflow(_ enabled: Bool) {
+        if enabled, lidAutomation { setLidAutomation(false) }
         autoWorkflow = enabled
         UserDefaults.standard.set(enabled, forKey: "autoWorkflow")
         workflowTask?.cancel()
@@ -1068,6 +1129,10 @@ final class DisplayManager {
         if restored {
             previousExternals = Set(displays.filter { !$0.isBuiltin }.map(\.uuid))
             previousExternalOnline = externalOnline
+        }
+        if lidAutomation {
+            userRestoredBuiltin = false
+            lidPolicy = LidAnglePolicy()
         }
         isApplying = false
         scheduleRefresh(reprobe: true)

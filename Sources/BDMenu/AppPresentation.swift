@@ -68,11 +68,15 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             let hosting = NSHostingController(rootView: ControlCenterView().environment(manager).environment(self))
             hosting.view.wantsLayer = true
             hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
-            let window = BDMenuWindow(contentRect: .zero, styleMask: [.borderless, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            let window = BDMenuWindow(contentRect: .zero, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.onEscape = { [weak self] in
+                guard let self else { return }
+                if self.manager.recordingAction != nil { self.manager.cancelRecording() }
+                else { self.close() }
+            }
             window.contentViewController = hosting
-            window.isOpaque = false
-            window.backgroundColor = .clear
-            window.hasShadow = false
+            window.backgroundColor = .windowBackgroundColor
+            window.hasShadow = true
             window.title = "BDMenu · 控制中心"
             window.contentMinSize = NSSize(width: 720, height: 560)
             let available = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 900)

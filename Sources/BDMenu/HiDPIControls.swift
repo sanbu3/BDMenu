@@ -19,6 +19,7 @@ struct HiDPIControls: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label("文字清晰度", systemImage: "textformat.size").font(.headline)
+                    .help("HiDPI 让文字和图标边缘更细腻，可能增加图形负载。仅提供系统已开放的模式；试用 15 秒，未保留会自动恢复。")
                 Spacer()
                 StatusPill(title: current.scaling ? "HiDPI 已开启" : "普通模式")
             }
@@ -48,8 +49,6 @@ struct HiDPIControls: View {
                     }
                 }
             }
-            Text("HiDPI 让文字和图标边缘更细腻，可能增加图形负载。仅提供系统已开放的模式；试用 15 秒，未保留会自动恢复。")
-                .font(BDMenuStyle.detail).foregroundStyle(.secondary)
         }
         .disabled(dm.isApplying || dm.mirrored)
     }

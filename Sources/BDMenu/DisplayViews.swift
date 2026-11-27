@@ -115,6 +115,7 @@ struct DisplayCard: View {
             }
             VStack(alignment: .leading, spacing: 10) {
                 Label("流畅度对照", systemImage: "speedometer").font(.headline)
+                    .help("先用 60 Hz 对照，再试 120 Hz；保持分辨率与 HiDPI 不变。高刷新率和更大的渲染尺寸可能增加图形负载，改善程度需实际对照。所有模式先试用 15 秒，未保留会自动恢复。")
                 if !state.renderDescription.isEmpty {
                     Text(state.renderDescription).font(BDMenuStyle.detail).foregroundStyle(.secondary)
                 }
@@ -130,10 +131,6 @@ struct DisplayCard: View {
                         }
                     }
                 }
-                Text("先用 60 Hz 对照，再试 120 Hz；保持分辨率与 HiDPI 不变。高刷新率和更大的渲染尺寸可能增加图形负载，改善程度需实际对照。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                Text("HiDPI 兼顾文字清晰度；下方可单独选择尺寸。所有模式先试用 15 秒，未保留会自动恢复。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
             }
             CapsuleMenu(title: "显示模式", value: state.modes.first(where: { $0.id == state.currentMode })?.label ?? "当前模式") {
                 Picker("显示模式", selection: Binding(get: { dm.state(display.id).currentMode }, set: { number in

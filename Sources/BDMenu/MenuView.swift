@@ -64,6 +64,14 @@ struct MenuView: View {
             }
             .padding(.horizontal, 4)
             Divider()
+            HStack {
+                Label("GPU \(dm.hardware.gpuLabel)", systemImage: "cpu")
+                    .help("整机 GPU 占用率，约每 2 秒更新")
+                Spacer()
+                Label(dm.hardware.angleLabel, systemImage: "laptopcomputer")
+                    .help("屏幕与键盘之间的实际开合角度")
+            }
+            .font(BDMenuStyle.detail).monospacedDigit()
             HStack(spacing: 10) {
                 Button("全部点亮") { dm.wakeAll() }
                     .help("恢复屏幕与亮度，同时暂停自动工作流")

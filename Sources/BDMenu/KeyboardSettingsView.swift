@@ -21,11 +21,11 @@ struct KeyboardSettingsView: View {
                         .accessibilityAddTraits(dm.brightnessTarget == target ? .isSelected : [])
                     }
                 }
-                Text(dm.brightnessTarget == .focusedWindow
-                     ? "窗口跨屏时，调节占用面积最大的一块；没有可读取的窗口时，回退到鼠标所在屏幕。"
-                     : "把鼠标移到目标屏幕，再按亮度快捷键。无需点击窗口。")
+                Label("目标选择规则", systemImage: "info.circle")
                     .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .help(dm.brightnessTarget == .focusedWindow
+                          ? "窗口跨屏时，调节占用面积最大的一块；没有可读取的窗口时，回退到鼠标所在屏幕。"
+                          : "把鼠标移到目标屏幕，再按亮度快捷键，无需点击窗口。")
             }
         }
         BDMenuCard {

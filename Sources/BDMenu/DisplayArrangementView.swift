@@ -49,8 +49,9 @@ struct DisplayArrangementView: View {
                         .font(BDMenuStyle.detail)
                     }
                     HStack {
-                        Text("坐标以界面尺寸计；相邻边缘会自动吸附。排列先试用 15 秒。")
+                        Label("排列说明", systemImage: "info.circle")
                             .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                            .help("坐标以界面尺寸计；相邻边缘会自动吸附。排列先试用 15 秒。")
                         Spacer()
                         Button("还原编辑") { reload() }
                         Button("试用排列") { Task { await dm.applyArrangement(draft, main: main) } }
@@ -60,8 +61,7 @@ struct DisplayArrangementView: View {
                 Divider()
                 Toggle("启动时恢复这组显示器最近使用的配置", isOn: Binding(
                     get: { dm.restoreRecentOnLaunch }, set: { dm.setRestoreRecentOnLaunch($0) }))
-                Text("自动记住已确认的排列、主屏、启停、分辨率、刷新率和色彩描述文件；不同显示器组合分别记忆。未确认的试用不会作为最近配置。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+                    .help("自动记住已确认的排列、主屏、启停、分辨率、刷新率和色彩描述文件；不同显示器组合分别记忆。未确认的试用不会作为最近配置。")
                 HStack {
                     TextField("预设名称，例如：双屏写作", text: $presetName).textFieldStyle(.roundedBorder)
                     Button("保存当前配置") {

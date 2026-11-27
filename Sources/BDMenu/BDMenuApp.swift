@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     @objc private func openCenter() { popover?.performClose(nil); presentation.show(.displays) }
     @objc private func openKeyboard() { popover?.performClose(nil); presentation.show(.keyboard) }
     @objc private func openApplication() { popover?.performClose(nil); presentation.show(.application) }
+    @objc private func closeCenter() { presentation.close() }
     @objc private func quit() { NSApplication.shared.terminate(nil) }
     @objc private func selectPage(_ sender: NSMenuItem) {
         guard let page = AppPresentation.Page(rawValue: sender.tag) else { return }
@@ -120,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         let editItem = NSMenuItem(); editItem.submenu = edit; root.addItem(editItem)
         let windows = NSMenu(title: "窗口")
-        windows.addItem(NSMenuItem(title: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        windows.addItem(item("关闭窗口", action: #selector(closeCenter), key: "w"))
         windows.addItem(NSMenuItem(title: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
         let windowsItem = NSMenuItem(); windowsItem.submenu = windows; root.addItem(windowsItem)
         NSApplication.shared.windowsMenu = windows
