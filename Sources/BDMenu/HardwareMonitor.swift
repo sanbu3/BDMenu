@@ -1,6 +1,7 @@
 import Foundation
 import IOKit.hid
 import Observation
+import IOKit.ps
 
 /// Feature report 1 uses a report ID followed by a little-endian angle in degrees.
 /// Reference: samhenrigold/LidAngleSensor (Apache-2.0); no helper process or root access.
@@ -8,6 +9,12 @@ import Observation
 final class HardwareMonitor {
     private(set) var lidAngle: Double?
     private(set) var gpuUsage: Double?
+    private(set) var lidClosed: Bool?
+    private(set) var onBattery = false
+    private(set) var sampledAt: Date?
+    @ObservationIgnored var onSample: (() -> Void)?
+    @ObservationIgnored private var angleTimer: Timer?
+    @ObservationIgnored private var angleDemand = false
     @ObservationIgnored var onAngle: ((Double?) -> Void)?
     @ObservationIgnored private var device: IOHIDDevice?
     @ObservationIgnored private var timer: Timer?
@@ -18,19 +25,51 @@ final class HardwareMonitor {
 
     func start() {
         guard timer == nil else { return }
-        connect()
-        sample()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        sampleSystem()
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sampleSystem() }
+        }
+        timer?.tolerance = 0.3
+        configureAngleTimer()
+    }
+    func setAngleDemand(_ enabled: Bool) {
+        angleDemand = enabled
+        configureAngleTimer()
+    }
+    private func configureAngleTimer() {
+        guard timer != nil, angleDemand else {
+            angleTimer?.invalidate(); angleTimer = nil
+            if let device { IOHIDDeviceClose(device, 0) }
+            device = nil; lidAngle = nil
+            return
+        }
+        guard angleTimer == nil else { return }
+        connect(); sample()
+        angleTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.sample() }
         }
-        timer?.tolerance = 0.05
+        angleTimer?.tolerance = 0.05
     }
-
     func stop() {
         timer?.invalidate(); timer = nil
+        angleTimer?.invalidate(); angleTimer = nil
         if let device { IOHIDDeviceClose(device, 0) }
         device = nil
-        lidAngle = nil; gpuUsage = nil
+        lidAngle = nil; gpuUsage = nil; sampledAt = nil; lidClosed = nil
+    }
+    private func sampleSystem() {
+        gpuUsage = Self.readGPU()
+        sampledAt = Date()
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        if root != 0 {
+            lidClosed = IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool
+            IOObjectRelease(root)
+        } else { lidClosed = nil }
+        if let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+           let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() {
+            onBattery = (source as String) == kIOPSBatteryPowerValue
+        }
+        onSample?()
     }
 
     private func connect() {
@@ -47,7 +86,6 @@ final class HardwareMonitor {
     }
 
     private func sample() {
-        if ticks % 8 == 0 { gpuUsage = Self.readGPU() }
         if device == nil, ticks % 20 == 0 { connect() }
         ticks &+= 1
         var angle: Double?

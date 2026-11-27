@@ -28,6 +28,21 @@ final class CommandRunnerTests: XCTestCase {
         XCTAssertTrue(result.succeeded)
         XCTAssertEqual(result.output, value)
     }
+    func testCancellationBeforeLaunchNeverRunsCommand() {
+        let result = CommandRunner.run("/usr/bin/printf", ["should-not-run"], cancellationCheck: { true })
+        XCTAssertEqual(result.status, -999)
+        XCTAssertTrue(result.output.isEmpty)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertFalse(result.timedOut)
+    }
+    func testCancellationTerminatesRunningCommandBeforeTimeout() {
+        let start = Date()
+        let result = CommandRunner.run("/bin/sh", ["-c", "trap '' TERM; while :; do :; done"], timeout: 5,
+                                       cancellationCheck: { Date().timeIntervalSince(start) > 0.15 })
+        XCTAssertEqual(result.status, -999)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+    }
     func testMissingExecutableReportsError() {
         let result = CommandRunner.run("/nonexistent/BDMenu-helper", [])
         XCTAssertFalse(result.succeeded)

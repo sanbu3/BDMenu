@@ -29,7 +29,8 @@ struct ControlCenterView: View {
                         Button {
                             presentation.page = page
                         } label: {
-                            Label(page.title, systemImage: page.symbol)
+                            Label(page == .application ? "应用" : page.title, systemImage: page.symbol)
+                                .lineLimit(1)
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(BDMenuCapsuleButtonStyle(prominent: presentation.page == page))
@@ -57,6 +58,7 @@ struct ControlCenterView: View {
                     case .keyboard: KeyboardSettingsView()
                     case .automation: AutomationPage().disabled(dm.isApplying)
                     case .application: ApplicationPage()
+                    case .adaptive: AdaptiveSettingsView()
                     }
                 }
                 .padding(.horizontal, 28)

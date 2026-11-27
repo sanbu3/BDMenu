@@ -6,6 +6,7 @@
 - `settings-demo.mp4`：macOS 原生窗口录屏，来源仅 BDMenu 窗口；截取开头约 9 秒并压缩，无音轨，展示自动化与应用设置入口。它不是窗口适配或自动降载的功能演示。
 - `../images/settings-demo.gif`：同一录屏导出的 5 fps、560 px 宽循环预览，便于 GitHub 内嵌展示。不是重新绘制的界面。
 - `../images/hero.png`：应用图标、真实窗口截图与标题的静态排版；生成脚本为 `../scripts/build_hero.py`，需要 Pillow 和本机中文字体。
+- `../images/adaptive-2.7.png`：2026-11-28 安装的 2.7.0 自适应设置窗口截图。
 - `../images/app-icon.png`：来自仓库构建的应用图标。
 - `../images/brightness-hud.png`：仓库既有旧版亮度提示素材，未作为本次首屏展示。
 

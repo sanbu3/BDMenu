@@ -5,7 +5,7 @@ import Observation
 @MainActor @Observable
 final class AppPresentation: NSObject, NSWindowDelegate {
     enum Page: Int, CaseIterable, Identifiable {
-        case displays, keyboard, automation, application
+        case displays, keyboard, automation, application, adaptive
         var id: Int { rawValue }
         var title: String {
             switch self {
@@ -13,6 +13,7 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             case .keyboard: return "快捷键"
             case .automation: return "自动化"
             case .application: return "应用与权限"
+            case .adaptive: return "自适应"
             }
         }
         var symbol: String {
@@ -21,6 +22,7 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             case .keyboard: return "keyboard"
             case .automation: return "switch.2"
             case .application: return "slider.horizontal.3"
+            case .adaptive: return "macwindow.on.rectangle"
             }
         }
         var subtitle: String {
@@ -29,6 +31,7 @@ final class AppPresentation: NSObject, NSWindowDelegate {
             case .keyboard: return "把常用的亮度调节，交给你习惯的按键。"
             case .automation: return "接入外接屏以后，让桌面按你的习惯运行。"
             case .application: return "管理外观与权限，随时了解当前运行状态。"
+            case .adaptive: return "共用显示状态，协调性能与窗口。"
             }
         }
     }
@@ -64,6 +67,7 @@ final class AppPresentation: NSObject, NSWindowDelegate {
         dismissQuickControls?()
         if let page { self.page = page }
         manager.panelOpened()
+        manager.deviceState.setAngleDemand("window", enabled: true)
         if window == nil {
             let hosting = NSHostingController(rootView: ControlCenterView().environment(manager).environment(self))
             hosting.view.wantsLayer = true
@@ -94,5 +98,10 @@ final class AppPresentation: NSObject, NSWindowDelegate {
     func close() { window?.performClose(nil) }
     func minimize() { window?.miniaturize(nil) }
 
-    func windowWillClose(_ notification: Notification) { manager.cancelRecording() }
+    func windowDidMiniaturize(_ notification: Notification) { manager.deviceState.setAngleDemand("window", enabled: false) }
+    func windowDidDeminiaturize(_ notification: Notification) { manager.deviceState.setAngleDemand("window", enabled: true) }
+    func windowWillClose(_ notification: Notification) {
+        manager.cancelRecording()
+        manager.deviceState.setAngleDemand("window", enabled: false)
+    }
 }

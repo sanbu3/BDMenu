@@ -52,7 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return true
     }
     func applicationWillTerminate(_ notification: Notification) { InterfaceInputState.shared.stop(); manager.stop() }
-    func popoverWillShow(_ notification: Notification) { manager.panelOpened() }
+    func popoverWillShow(_ notification: Notification) {
+        manager.panelOpened()
+        manager.deviceState.setAngleDemand("popover", enabled: true)
+    }
+    func popoverDidClose(_ notification: Notification) { manager.deviceState.setAngleDemand("popover", enabled: false) }
 
     private func updateStatusAppearance() {
         withObservationTracking {
