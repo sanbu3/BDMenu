@@ -54,6 +54,24 @@ final class DisplaySnapshotTests: XCTestCase {
         XCTAssertFalse(DisplaySnapshot.canRestore(["id:\(first) enabled:false"], connectedIDs: [first]))
         XCTAssertTrue(DisplaySnapshot.canRestore(["id:\(first)+\(second) enabled:true"], connectedIDs: [first, second]))
     }
+    func testRestoreAllowsOmittedDisabledPanelButRejectsNewActiveOrDisconnectedScreens() {
+        let args = ["id:\(first) enabled:true"]
+        XCTAssertTrue(DisplaySnapshot.canRestore(args, connectedIDs: [first, second], activeIDs: [first]))
+        XCTAssertFalse(DisplaySnapshot.canRestore(args, connectedIDs: [first, second], activeIDs: [first, second]))
+        XCTAssertFalse(DisplaySnapshot.canRestore(args, connectedIDs: [second], activeIDs: [second]))
+    }
+
+    func testDisablingForcesSingleDisplayEntryOffWithoutTouchingOthers() {
+        let args = ["id:\(first) res:1920x1080 enabled:true origin:(0,0)",
+                    "id:\(second) enabled:true",
+                    "id:\(first)+\(second) enabled:true origin:(0,0)"]
+        let forced = DisplaySnapshot.disabling(second, in: args)
+        XCTAssertEqual(forced[1], "id:\(second) enabled:false")
+        XCTAssertEqual(forced[0], args[0])
+        XCTAssertEqual(forced[2], args[2], "mirrored groups are left alone")
+        XCTAssertEqual(DisplaySnapshot.disabling("", in: args), args)
+    }
+
     func testQuotedArgumentsStayWholeAndRejectShellSuffix() {
         XCTAssertEqual(DisplaySnapshot.quotedArguments("\"id:\(first) enabled:true origin:(0,0)\""), ["id:\(first) enabled:true origin:(0,0)"])
         XCTAssertNil(DisplaySnapshot.quotedArguments("\"id:\(first) enabled:true\"; echo bad"))

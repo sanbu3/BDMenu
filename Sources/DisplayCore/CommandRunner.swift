@@ -15,7 +15,8 @@ public struct CommandResult: Sendable {
 
 public enum CommandRunner {
     /// Run on a worker queue. File-backed output avoids pipe-buffer deadlocks.
-    public static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 4) -> CommandResult {
+    public static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 4, cancellationCheck: (@Sendable () -> Bool)? = nil) -> CommandResult {
+        if cancellationCheck?() == true { return CommandResult(output: "", error: "Command cancelled", status: -999, timedOut: false) }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("BDMenu-\(UUID().uuidString)")
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
@@ -37,8 +38,20 @@ public enum CommandRunner {
             process.standardError = stderr
             process.terminationHandler = { _ in finished.signal() }
             try process.run()
-            let timedOut = finished.wait(timeout: .now() + max(0.05, timeout)) == .timedOut
-            if timedOut {
+            var cancelled = false
+            let timedOut: Bool
+            if let cancellationCheck {
+                let deadline = Date().addingTimeInterval(max(0.05, timeout))
+                var completed = false
+                while !completed, Date() < deadline {
+                    if cancellationCheck() { cancelled = true; break }
+                    completed = finished.wait(timeout: .now() + 0.05) == .success
+                }
+                timedOut = !completed && !cancelled
+            } else {
+                timedOut = finished.wait(timeout: .now() + max(0.05, timeout)) == .timedOut
+            }
+            if timedOut || cancelled {
                 process.terminate()
                 if finished.wait(timeout: .now() + 0.2) == .timedOut, process.isRunning {
                     kill(process.processIdentifier, SIGKILL)
@@ -52,7 +65,7 @@ public enum CommandRunner {
                 return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             }
             return CommandResult(output: read(stdoutURL), error: read(stderrURL),
-                                 status: process.terminationStatus, timedOut: timedOut)
+                                 status: cancelled ? -999 : process.terminationStatus, timedOut: timedOut)
         } catch {
             return CommandResult(output: "", error: error.localizedDescription, status: -1, timedOut: false)
         }

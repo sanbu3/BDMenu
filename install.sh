@@ -11,8 +11,10 @@ trap 'rm -rf "$STAGE"' EXIT
 ditto "$APP" "$STAGE/BDMenu.app"
 codesign --verify --deep --strict "$STAGE/BDMenu.app"
 if pgrep -x BDMenu >/dev/null; then
-  osascript -e 'tell application id "com.local.BDMenu" to quit'
-  for ((ATTEMPT=0; ATTEMPT<30; ATTEMPT++)); do
+  # Multiple old bundles may share this identifier. Address the installed path
+  # explicitly so LaunchServices cannot pick a backup or a prototype.
+  osascript -e 'on run argv' -e 'tell application (item 1 of argv) to quit' -e 'end run' "$DEST/BDMenu.app"
+  for ((ATTEMPT=0; ATTEMPT<100; ATTEMPT++)); do
     pgrep -x BDMenu >/dev/null || break
     sleep 0.1
   done

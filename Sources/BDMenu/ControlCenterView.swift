@@ -10,17 +10,11 @@ struct ControlCenterView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(spacing: 14) {
-                    HStack(spacing: 8) {
-                        WindowActionButton(symbol: "xmark", label: "关闭控制中心", action: presentation.close)
-                        WindowActionButton(symbol: "minus", label: "最小化", action: presentation.minimize)
-                    }
                     HStack(spacing: 12) {
                         Image(nsImage: NSApplication.shared.applicationIconImage)
                             .resizable().frame(width: 46, height: 46)
                         VStack(alignment: .leading, spacing: 4) {
                             Text("BDMenu").font(.system(size: 24, weight: .semibold))
-                            Text("让每块屏幕，都刚刚好。")
-                                .font(BDMenuStyle.detail).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 0)
                     }
@@ -35,7 +29,8 @@ struct ControlCenterView: View {
                         Button {
                             presentation.page = page
                         } label: {
-                            Label(page.title, systemImage: page.symbol)
+                            Label(page == .application ? "应用" : page.title, systemImage: page.symbol)
+                                .lineLimit(1)
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(BDMenuCapsuleButtonStyle(prominent: presentation.page == page))
@@ -54,16 +49,16 @@ struct ControlCenterView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 7) {
                         Text(presentation.page.title).font(BDMenuStyle.title)
-                        Text(presentation.page.subtitle).font(BDMenuStyle.body).foregroundStyle(.secondary)
                     }
                     .padding(.bottom, 2)
+                    ModeTrialNotice()
                     if let error = dm.lastError { ErrorNotice(message: error) }
                     switch presentation.page {
                     case .displays: DisplaysPage()
                     case .keyboard: KeyboardSettingsView()
-                    case .automation: AutomationPage()
+                    case .automation: AutomationPage().disabled(dm.isApplying)
                     case .application: ApplicationPage()
-                    case .dock: DockSettingsCard()
+                    case .adaptive: AdaptiveSettingsView()
                     }
                 }
                 .padding(.horizontal, 28)
@@ -78,14 +73,13 @@ struct ControlCenterView: View {
                 Text("\(dm.displays.filter(\.enabled).count) 块屏幕在线")
                 Text("·").foregroundStyle(.tertiary)
                 Text("BDMenu \(dm.version)").foregroundStyle(.secondary)
+                Text("· GPU \(dm.hardware.gpuLabel)")
+                    .monospacedDigit()
+                    .help("整机 GPU 使用率，约每 2 秒更新；驱动未提供数据时显示 —。")
                 Spacer()
-                if dm.isApplying { ProgressView().controlSize(.small); Text("正在应用…") }
-                else { Text("设置自动保存").foregroundStyle(.secondary) }
-                Image(systemName: "line.3.horizontal.decrease")
-                    .font(.system(size: 12)).rotationEffect(.degrees(-45))
-                    .foregroundStyle(.tertiary).frame(width: 24, height: 24)
-                    .overlay(WindowResizeHandle().accessibilityHidden(true))
-                    .help("拖动调整窗口大小")
+                if dm.modeTrialLabel != nil { Text("等待确认 · \(dm.modeTrialSeconds) 秒").foregroundStyle(.secondary) }
+                else if dm.isApplying { ProgressView().controlSize(.small); Text("正在应用…") }
+                else { Text("⌘W / Esc 关闭").foregroundStyle(.secondary).help("关闭设置窗口，BDMenu 继续在菜单栏运行。设置自动保存。") }
             }
             .font(.system(size: 12))
             .padding(.horizontal, 28)
@@ -98,10 +92,10 @@ struct ControlCenterView: View {
         .controlSize(.large)
         .frame(minWidth: 720, minHeight: 560)
         .background(BDMenuBackground(windowSurface: true))
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1).allowsHitTesting(false))
-        .onExitCommand { dm.cancelRecording() }
+        .onExitCommand {
+            if dm.recordingAction != nil { dm.cancelRecording() }
+            else { presentation.close() }
+        }
         .onChange(of: presentation.page) { _, _ in dm.cancelRecording() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in dm.cancelRecording() }
     }
@@ -131,6 +125,7 @@ private struct DisplaysPage: View {
                 }
             }
         }
+        DisplayArrangementView()
         ForEach(dm.presentationDisplays) { DisplayCard(display: $0) }
         BDMenuCard {
             VStack(alignment: .leading, spacing: 18) {
@@ -141,11 +136,10 @@ private struct DisplaysPage: View {
                 HStack {
                     Button("恢复已记忆布局") { Task { await dm.restoreLayout() } }.disabled(dm.isApplying)
                     Spacer()
-                    Button("全部点亮") { dm.wakeAll() }
+                    Button("全部点亮") { dm.wakeAll() }.help("恢复屏幕与亮度，并暂停自动切换。")
                         .buttonStyle(BDMenuCapsuleButtonStyle(prominent: true))
                 }
-                Text("“全部点亮”会恢复可识别的屏幕与亮度，并暂停自动关闭内建屏的工作流。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
+
             }
         }
     }
@@ -156,23 +150,18 @@ private struct AutomationPage: View {
     @Environment(DisplayManager.self) private var dm
 
     var body: some View {
+        LidAutomationView()
         BDMenuCard {
             VStack(alignment: .leading, spacing: 16) {
                 SectionHeading(title: "外接屏工作流", subtitle: "接上外接屏，切换到桌面；拔下线，回到内建屏。", symbol: "cable.connector")
                 Toggle(isOn: Binding(get: { dm.autoWorkflow }, set: { dm.setAutoWorkflow($0) })) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("连接外接屏时停用内建屏").fontWeight(.medium)
-                        Text("断开外接屏或退出应用时，恢复由此工作流停用的内建屏。")
-                            .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    }
+                    Text("连接外接屏时始终停用内建屏").fontWeight(.medium)
+                        .help("与角度模式互斥；拔下外接屏或退出应用时恢复内建屏。")
                 }
                 Divider()
                 Toggle(isOn: Binding(get: { dm.syncKeyboardBacklight }, set: { dm.setSyncKeyboardBacklight($0) })) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("同步内置键盘背光").fontWeight(.medium)
-                        Text(dm.keyboardBacklightAvailable ? "内建屏停用时关闭背光，恢复时还原先前亮度。" : "当前设备没有可控制的内置键盘背光。")
-                            .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    }
+                    Text("同步内置键盘背光").fontWeight(.medium)
+                        .help(dm.keyboardBacklightAvailable ? "内建屏停用时关闭背光，恢复时还原先前亮度。" : "当前设备没有可控制的内置键盘背光。")
                 }
                 .disabled(!dm.keyboardBacklightAvailable)
             }
@@ -200,9 +189,7 @@ private struct AutomationPage: View {
                     Text(dm.passwordPreference.diagnostics).font(BDMenuStyle.detail).foregroundStyle(.secondary)
                 }
                 Divider()
-                Text("手动停用内建屏、合盖或外接屏工作流关闭内建屏，都会优先密码；重新启用内建屏后恢复优先 Touch ID。指纹不可用时仍用密码。系统设置、安装软件等授权窗口需提供相应切换入口；不会更改系统指纹设置，也不会读取或提交密码。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Label("切换方式说明", systemImage: "info.circle").font(BDMenuStyle.detail).foregroundStyle(.secondary).help("手动停用内建屏、合盖或外接屏工作流关闭内建屏，都会优先密码；重新启用内建屏后恢复优先 Touch ID。指纹不可用时仍用密码。系统设置、安装软件等授权窗口需提供相应切换入口；不会更改系统指纹设置，也不会读取或提交密码。")
             }
         }
     }
@@ -231,9 +218,7 @@ struct PermissionCard: View {
                         Button("重新检测") { dm.refreshPermission() }
                     }
                 }
-                Text("在系统设置 → 隐私与安全性 → 辅助功能中允许 BDMenu。暂不授权也可以用面板上的滑块控制亮度。")
-                    .font(BDMenuStyle.detail).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Label("授权与手动控制", systemImage: "info.circle").font(BDMenuStyle.detail).foregroundStyle(.secondary).help("在系统设置 → 隐私与安全性 → 辅助功能中允许 BDMenu。暂不授权也可以用面板上的滑块控制亮度。")
             }
         }
     }

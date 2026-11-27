@@ -54,6 +54,9 @@ cp "$BIN_DIR/BDMenu" "$APP/Contents/MacOS/BDMenu"
 cp bin/m1ddc bin/displayplacer "$APP/Contents/Resources/"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources/Licenses"
+cp LICENSE "$APP/Contents/Resources/Licenses/BDMenu.txt"
+cp docs/licenses/*.txt "$APP/Contents/Resources/Licenses/"
 # Finder metadata/resource forks inherited from local files are rejected by
 # codesign. Clean only the new staging bundle before any signatures are made.
 xattr -cr "$APP"
@@ -74,6 +77,7 @@ if ! mv "$APP" "$OUTPUT_DIR/BDMenu.app"; then
   if [ -d "$OUTPUT_DIR/BDMenu.previous.app" ]; then mv "$OUTPUT_DIR/BDMenu.previous.app" "$OUTPUT_DIR/BDMenu.app"; fi
   exit 1
 fi
+rm -rf "$OUTPUT_DIR/BDMenu.previous.app"
 if ! $ADHOC; then
   # Persist the chosen identity outside .build so a clean build does not change it.
   printf '%s\n' "$IDENTITY" > .signing-identity

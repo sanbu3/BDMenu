@@ -1,0 +1,24 @@
+{
+  "initial": "{{40, 60}, {1670, 735}}",
+  "restoredSize": true,
+  "returned": "{{40, 60}, {1670, 735}}",
+  "small": "{{224, -734}, {1470, 646}}",
+  "smallFits": true,
+  "sourceVisible": "{{0, 0}, {1920, 1050}}",
+  "targetVisible": "{{224, -868}, {1470, 835}}",
+  "method": "Programmatically moved a temporary test NSWindow between the two physical screens; not a physical mouse drag.",
+  "transitionSampleCount": 50,
+  "distinctSampledHeights": [
+    646,
+    648,
+    655,
+    665,
+    677,
+    691,
+    704,
+    716,
+    726,
+    733,
+    735
+  ]
+}

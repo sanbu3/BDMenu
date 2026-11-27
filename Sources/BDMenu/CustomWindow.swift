@@ -3,9 +3,11 @@ import SwiftUI
 
 /// A utility window whose entire visible surface belongs to the app.
 final class BDMenuWindow: NSWindow {
+    var onEscape: (() -> Void)?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
     override func performClose(_ sender: Any?) { close() }
+    override func cancelOperation(_ sender: Any?) { onEscape?() }
 }
 
 struct WindowDragRegion: NSViewRepresentable {

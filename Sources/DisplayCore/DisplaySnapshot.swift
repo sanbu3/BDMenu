@@ -82,6 +82,16 @@ public struct DisplaySnapshot: Sendable {
         }
         flush()
     }
+    public func includingDisabled(_ ids: Set<String>) -> DisplaySnapshot {
+        var result = self
+        for id in ids.sorted() where !result.layouts.contains(where: { $0.uuid == id }) {
+            guard UUID(uuidString: id) != nil else { continue }
+            var layout = DisplayLayout(); layout.uuid = id
+            result.layouts.append(layout)
+            result.arguments.append(layout.argument)
+        }
+        return result
+    }
     private static func value(_ line: String) -> String {
         guard let colon = line.firstIndex(of: ":") else { return "" }
         return line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
@@ -117,11 +127,22 @@ public struct DisplaySnapshot: Sendable {
             return first.dropFirst(3).split(separator: "+").map(String.init)
         })
     }
-    public static func canRestore(_ arguments: [String], connectedIDs: Set<String>) -> Bool {
+    public static func canRestore(_ arguments: [String], connectedIDs: Set<String>, activeIDs: Set<String>? = nil) -> Bool {
         let ids = referencedIDs(arguments)
-        return !arguments.isEmpty && !ids.isEmpty && ids == connectedIDs
+        return !arguments.isEmpty && !ids.isEmpty && ids.isSubset(of: connectedIDs)
+            && (activeIDs ?? connectedIDs).isSubset(of: ids)
             && ids.allSatisfy { UUID(uuidString: $0) != nil }
             && arguments.contains { $0.split(whereSeparator: \.isWhitespace).contains("enabled:true") }
+    }
+    /// Forces a single-display entry to stay disabled, e.g. the built-in panel while
+    /// the automatic workflow owns it. Grouped (mirrored) entries are left untouched.
+    public static func disabling(_ uuid: String, in arguments: [String]) -> [String] {
+        guard !uuid.isEmpty else { return arguments }
+        let target = "id:\(uuid)"
+        return arguments.map { argument in
+            guard argument.split(whereSeparator: \.isWhitespace).first.map(String.init) == target else { return argument }
+            return "\(target) enabled:false"
+        }
     }
     public static func movingMain(to uuid: String, in layouts: [DisplayLayout]) -> [DisplayLayout]? {
         guard let target = layouts.first(where: { $0.uuid == uuid && $0.enabled }) else { return nil }
